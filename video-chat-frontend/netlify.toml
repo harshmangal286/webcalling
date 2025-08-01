@@ -1,0 +1,4 @@
+[build]
+  base = "video-chat-frontend"
+  publish = "dist"
+  command = "npm run build"
