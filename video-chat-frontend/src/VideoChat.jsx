@@ -284,11 +284,9 @@ const VideoChat = () => {
             pc.addTrack(track, localStreamRef.current);
           } else {
             console.warn(`Track of kind ${track.kind} already added.`);
-
-
-
           }
         });
+
       }
 
 
@@ -423,7 +421,7 @@ const VideoChat = () => {
     const videos = document.querySelectorAll('video');
     videos.forEach(video => {
       video.play().catch((err) => {
-        console.warn('Autoplay blocked, will retry on interaction',err);
+        console.warn('Autoplay blocked, will retry on interaction', err);
       });
     });
 
@@ -716,9 +714,9 @@ const VideoChat = () => {
           sender.replaceTrack(videoTrack);
         }
       });
-
       videoTrack.onended = stopScreenShare;
       setIsScreenSharing(true);
+
     } catch (error) {
       console.error("Error starting screen share:", error);
       setError("Failed to start screen sharing");

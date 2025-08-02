@@ -1,3 +1,4 @@
+import { Server } from "socket.io";
 const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io');
@@ -7,12 +8,11 @@ const app = express();
 const server = http.createServer(app);
 app.use(cors());
 
-const io = socketIO(server, {
-    cors: {
-        origin: "http://localhost:5173",
-        methods: ["GET", "POST"],
-        credentials: true
-    }
+const io = new Server(httpServer, {
+  cors: {
+    origin: ["http://localhost:5173", "https://webcall1.netlify.app"],
+    methods: ["GET", "POST"]
+  }
 });
 
 const rooms = new Map(); // Track rooms and their participants
