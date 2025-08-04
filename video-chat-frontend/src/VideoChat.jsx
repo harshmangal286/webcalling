@@ -187,8 +187,12 @@ const VideoChat = () => {
       const configuration = {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }
-        ]
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:stun3.l.google.com:19302' },
+          { urls: 'stun:stun4.l.google.com:19302' }
+        ],
+        iceCandidatePoolSize: 10
       };
 
       const peerConnection = new RTCPeerConnection(configuration);
@@ -242,6 +246,10 @@ const VideoChat = () => {
         if (peerConnection.iceConnectionState === 'failed') {
           console.log('ICE connection failed, attempting restart...');
           peerConnection.restartIce();
+        } else if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
+          console.log(`ICE connection established with ${userId}`);
+        } else if (peerConnection.iceConnectionState === 'checking') {
+          console.log(`ICE connection checking with ${userId}`);
         }
       };
 
@@ -259,6 +267,10 @@ const VideoChat = () => {
 
           // Remove failed streams
           setRemoteStreams(prev => prev.filter(s => s.userId !== userId));
+        } else if (peerConnection.connectionState === 'connected') {
+          console.log(`Connection established with ${userId}`);
+        } else if (peerConnection.connectionState === 'connecting') {
+          console.log(`Connection connecting with ${userId}`);
         }
       };
 
@@ -293,6 +305,15 @@ const VideoChat = () => {
 
       // Store the connection
       peerConnectionsRef.current[userId] = peerConnection;
+      
+      // Add timeout to restart ICE if connection doesn't establish
+      setTimeout(() => {
+        if (peerConnection.iceConnectionState === 'new' || peerConnection.iceConnectionState === 'checking') {
+          console.log(`ICE connection timeout for ${userId}, restarting ICE...`);
+          peerConnection.restartIce();
+        }
+      }, 10000); // 10 second timeout
+      
       return peerConnection;
     } catch (error) {
       console.error('Error creating peer connection:', error);
@@ -1120,50 +1141,63 @@ const VideoChat = () => {
               <p>Camera turned off</p>
             </div>
           ) : (
-            <video
-              key={`video-${streamInfo.userId}-${Date.now()}`}
-              data-user-id={streamInfo.userId}
-              autoPlay
-              playsInline
-              muted={false}
-              ref={(el) => {
-                if (el && streamInfo.stream) {
-                  // Only set srcObject if it's different to avoid unnecessary reloads
-                  if (el.srcObject !== streamInfo.stream) {
-                    el.srcObject = streamInfo.stream;
-                    console.log(`Video ${streamInfo.userId} loaded`);
-                  }
+                         <video
+               key={`video-${streamInfo.userId}-${Date.now()}`}
+               data-user-id={streamInfo.userId}
+               autoPlay
+               playsInline
+               muted={false}
+               ref={(el) => {
+                 if (el && streamInfo.stream) {
+                   // Only set srcObject if it's different to avoid unnecessary reloads
+                   if (el.srcObject !== streamInfo.stream) {
+                     el.srcObject = streamInfo.stream;
+                     console.log(`Video ${streamInfo.userId} loaded`);
+                     
+                     // Check if stream has tracks
+                     const tracks = streamInfo.stream.getTracks();
+                     console.log(`Stream tracks for ${streamInfo.userId}:`, tracks.map(t => ({ kind: t.kind, enabled: t.enabled, readyState: t.readyState })));
+                   }
 
-                  // Only set up event handlers if they haven't been set
-                  if (!el._handlersSet) {
-                    el.onloadedmetadata = () => {
-                      console.log(`Video metadata loaded for ${streamInfo.userId}`);
-                      if (el.srcObject && !el.paused) {
-                        el.play().catch(err => {
-                          if (err.name !== 'AbortError') {
-                            console.warn("Playback error:", err);
-                          }
-                        });
-                      }
-                    };
+                   // Only set up event handlers if they haven't been set
+                   if (!el._handlersSet) {
+                     el.onloadedmetadata = () => {
+                       console.log(`Video metadata loaded for ${streamInfo.userId}`);
+                       if (el.srcObject && el.paused) {
+                         el.play().catch(err => {
+                           if (err.name !== 'AbortError') {
+                             console.warn("Playback error:", err);
+                           }
+                         });
+                       }
+                     };
 
-                    el.oncanplay = () => {
-                      if (el.srcObject && el.paused) {
-                        el.play().catch(err => {
-                          if (err.name !== 'AbortError') {
-                            console.warn("Canplay play failed:", err);
-                          }
-                        });
-                      }
-                    };
+                     el.oncanplay = () => {
+                       console.log(`Video can play for ${streamInfo.userId}`);
+                       if (el.srcObject && el.paused) {
+                         el.play().catch(err => {
+                           if (err.name !== 'AbortError') {
+                             console.warn("Canplay play failed:", err);
+                           }
+                         });
+                       }
+                     };
 
-                    el._handlersSet = true;
-                  }
-                }
-              }}
-              className="video-item"
-              style={{ transform: 'scaleX(-1)' }}
-            />
+                     el.onplay = () => {
+                       console.log(`Video started playing for ${streamInfo.userId}`);
+                     };
+
+                     el.onerror = (e) => {
+                       console.error(`Video error for ${streamInfo.userId}:`, e);
+                     };
+
+                     el._handlersSet = true;
+                   }
+                 }
+               }}
+               className="video-item"
+               style={{ transform: 'scaleX(-1)' }}
+             />
           )}
           <div className="participant-name">{username}</div>
         </div>
