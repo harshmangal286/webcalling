@@ -501,6 +501,8 @@
   background: #1a1a1a;
   border-radius: 8px;
   overflow: hidden;
+  min-height: 200px;
+  border: 2px solid #333;
 }
 
 .videos {
