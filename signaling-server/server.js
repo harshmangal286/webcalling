@@ -9,7 +9,12 @@ app.use(cors());
 
 const io = socketIO(server, {
     cors: {
-        origin: "http://localhost:5173",
+        origin: [
+            "http://localhost:5173",
+            "http://localhost:3000",
+            "https://webcall1.netlify.app",
+            "https://webcall.netlify.app"
+        ],
         methods: ["GET", "POST"],
         credentials: true
     }
@@ -176,6 +181,17 @@ io.on('connection', (socket) => {
             userId: socket.id,
             speaking
         });
+    });
+
+    // Handle video state changes
+    socket.on('videoStateChange', ({ roomId, isVideoOff }) => {
+        const user = users.get(socket.id);
+        if (user && rooms.has(roomId)) {
+            socket.to(roomId).emit('videoStateChanged', {
+                userId: socket.id,
+                isVideoOff
+            });
+        }
     });
 });
 

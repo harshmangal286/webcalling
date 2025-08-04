@@ -491,6 +491,17 @@ const VideoChat = () => {
         return;
       }
 
+      // Add a small random delay to reduce offer collision probability
+      const delay = Math.random() * 200; // 0-200ms delay
+      console.log(`Adding ${delay.toFixed(0)}ms delay to reduce collision probability`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+
+      // Double-check that we still don't have a peer connection after the delay
+      if (peerConnectionsRef.current[userId]) {
+        console.log('Peer connection was created during delay, aborting call initiation');
+        return;
+      }
+
       // Get roomId from state or socket
       const currentRoomId = roomId || socket?.roomId;
       if (!currentRoomId) {
@@ -559,6 +570,8 @@ const VideoChat = () => {
 
     } catch (error) {
       console.error('Failed to initiate call:', error);
+      // Handle connection failure inline
+      console.log('Handling connection failure for:', userId);
       
       // Clean up failed connection
       if (peerConnectionsRef.current[userId]) {
@@ -1382,21 +1395,648 @@ const VideoChat = () => {
     }
   }, [participants, isJoined, socket?.id, initiateCall]);
 
+  // Clean up when I leave or someone else leaves
+  const handleUserDisconnected = (userId) => {
+    if (!userId) {
+      console.error('Invalid userId for disconnection');
+      return;
+    }
+
+    cleanupPeerConnection(userId);
+
+    setRemoteStreams(prev => prev.filter(streamInfo =>
+      streamInfo && streamInfo.userId && streamInfo.userId !== userId
+    ));
+
+    setParticipants(prev => prev.filter(p =>
+      p && p.id && p.id !== userId
+    ));
+
+    setRemoteVideoStates(prev => {
+      if (!prev) return {};
+      const newStates = { ...prev };
+      delete newStates[userId];
+      return newStates;
+    });
+  };
+
+  // My controls for video/audio
+  const toggleAudio = () => {
+    if (localStreamRef.current) {
+      const audioTracks = localStreamRef.current.getAudioTracks();
+      audioTracks.forEach(track => {
+        track.enabled = !track.enabled;
+      });
+      // Fix the reversed logic - when track is enabled, we're not muted
+      const isTrackEnabled = audioTracks[0]?.enabled;
+      setIsAudioMuted(!isTrackEnabled);
+      console.log('Audio toggled:', { trackEnabled: isTrackEnabled, isMuted: !isTrackEnabled });
+    }
+  };
+
+  const toggleVideo = () => {
+    if (localStreamRef.current) {
+      const videoTracks = localStreamRef.current.getVideoTracks();
+      
+      // Check current state
+      const currentTrackEnabled = videoTracks[0]?.enabled;
+      const newTrackEnabled = !currentTrackEnabled;
+      
+      console.log('Toggling video:', { current: currentTrackEnabled, new: newTrackEnabled });
+      
+      // Set track state
+      videoTracks.forEach(track => {
+        track.enabled = newTrackEnabled;
+      });
+      
+      // Update state
+      setIsVideoOff(!newTrackEnabled);
+      
+      console.log('Video toggled:', { trackEnabled: newTrackEnabled, isVideoOff: !newTrackEnabled });
+
+      // Replace track in all peer connections to ensure remote peers get the updated track
+      Object.values(peerConnectionsRef.current).forEach(peerConnection => {
+        const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+        if (sender && videoTracks[0]) {
+          console.log('Replacing video track in peer connection');
+          sender.replaceTrack(videoTracks[0]).catch(err => {
+            console.error('Error replacing video track:', err);
+          });
+        }
+      });
+
+      // Let others know I turned my camera off/on
+      socket.emit('videoStateChange', {
+        roomId,
+        isVideoOff: !newTrackEnabled
+      });
+      
+      // Force re-enable if turning on and track is still disabled
+      if (newTrackEnabled) {
+        setTimeout(() => {
+          const track = videoTracks[0];
+          if (track && !track.enabled && track.readyState === 'live') {
+            console.log('Force re-enabling video track');
+            track.enabled = true;
+            setIsVideoOff(false);
+          }
+        }, 100);
+      }
+      
+      // Force refresh remote streams after a delay to ensure changes propagate
+      setTimeout(() => {
+        setRemoteStreams(prev => prev.map(streamInfo => ({
+          ...streamInfo,
+          stream: streamInfo.stream
+        })));
+      }, 200);
+    }
+  };
+
+  // Let me share my screen
+  const toggleScreenShare = async () => {
+    if (isScreenSharing) {
+      await stopScreenShare();
+    } else {
+      await startScreenShare();
+    }
+  };
+
+  const startScreenShare = async () => {
+    try {
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      const videoTrack = screenStream.getVideoTracks()[0];
+
+      Object.values(peerConnectionsRef.current).forEach(peerConnection => {
+        const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+        if (sender) {
+          sender.replaceTrack(videoTrack);
+        }
+      });
+      videoTrack.onended = stopScreenShare;
+      setIsScreenSharing(true);
+
+    } catch (error) {
+      console.error("Error starting screen share:", error);
+      setError("Failed to start screen sharing");
+    }
+  };
+
+  const stopScreenShare = async () => {
+    try {
+      const videoTrack = localStreamRef.current.getVideoTracks()[0];
+      Object.values(peerConnectionsRef.current).forEach(peerConnection => {
+        const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+        if (sender) {
+          sender.replaceTrack(videoTrack);
+        }
+      });
+      setIsScreenSharing(false);
+    } catch (error) {
+      console.error("Error stopping screen share:", error);
+    }
+  };
+
+  // Chat function
+  const sendMessage = () => {
+    if (message.trim() && roomId) {
+      try {
+        const messageToSend = message.trim();
+        console.log('Sending message:', { roomId, message: messageToSend });
+        socket.emit('chatMessage', {
+          roomId,
+          message: messageToSend
+        });
+        setMessage('');
+      } catch (error) {
+        console.error('Error sending message:', error);
+        setError('Failed to send message');
+      }
+    }
+  };
+
+  // Add this function inside your VideoChat component
+  const getVideoContainerClass = () => {
+    const totalParticipants = remoteStreams.length + 1; // +1 for local stream
+    if (totalParticipants === 1) return 'videos single';
+    if (totalParticipants === 2) return 'videos pair';
+    return 'videos multiple';
+  };
+
+  // Add these functions to your VideoChat component
+  const leaveCall = async () => {
+    console.log('Leaving call...');
+    try {
+      // Close and cleanup peer connections
+      Object.entries(peerConnectionsRef.current).forEach(([userId, pc]) => {
+        console.log(`Closing connection with ${userId}`);
+        pc.close();
+      });
+      peerConnectionsRef.current = {};
+
+      // Stop all local tracks
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(track => {
+          track.stop();
+          console.log(`Stopped track: ${track.kind}`);
+        });
+      }
+
+      const stream = localStreamRef.current;
+
+      // Clear video elements
+      if (localVideoRef.current && stream) {
+        localVideoRef.current.srcObject = stream;
+      }
+
+      // Reset states
+      setRemoteStreams([]);
+      setIsJoined(false);
+      clearChat();
+
+      // Notify server
+      socket.emit('leaveRoom', { roomId });
+      console.log('Left room:', roomId);
+    } catch (error) {
+      console.error('Error during call cleanup:', error);
+      setError('Failed to properly clean up call');
+    }
+  };
+
+  const endCall = () => {
+    if (isHost) {
+      socket.emit('endCall', { roomId });
+      leaveCall();
+      clearChat();
+    }
+  };
+
+  // Add clearChat function
+  const clearChat = () => {
+    setChatMessages([]);
+  };
+
+  // Add connection state logging
+  useEffect(() => {
+    const logConnectionState = () => {
+      console.log('=== Peer Connection Status ===');
+      Object.entries(peerConnectionsRef.current).forEach(([userId, pc]) => {
+        console.log(`User ${userId}:`, {
+          connectionState: pc.connectionState,
+          iceConnectionState: pc.iceConnectionState,
+          signalingState: pc.signalingState,
+          hasRemoteDescription: !!pc.remoteDescription,
+          hasLocalDescription: !!pc.localDescription
+        });
+      });
+      console.log('=== End Status ===');
+    };
+
+    // Check more frequently for debugging
+    const interval = setInterval(logConnectionState, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Add this useEffect to monitor video element and stream
+  useEffect(() => {
+    // Ensure local video element always has the stream set
+    if (localVideoRef.current && localStreamRef.current) {
+      if (!localVideoRef.current.srcObject) {
+        console.log('Setting local stream to video element from monitoring');
+        localVideoRef.current.srcObject = localStreamRef.current;
+      }
+      
+      // Force play if paused
+      if (localVideoRef.current.paused) {
+        localVideoRef.current.play().catch(err => {
+          if (err.name !== 'AbortError') {
+            console.warn('Force play local video failed:', err);
+          }
+        });
+      }
+    }
+  }, [localStreamRef.current, isJoined]);
+
+  // Add this useEffect to monitor video track status
+  useEffect(() => {
+    const checkVideoTrack = () => {
+      if (localStreamRef.current) {
+        const videoTrack = localStreamRef.current.getVideoTracks()[0];
+        if (videoTrack) {
+          // Only log if there's an issue and the track is not intentionally ended
+          if (!videoTrack.enabled || (videoTrack.readyState !== 'live' && videoTrack.readyState !== 'ended')) {
+            console.warn('Video track issue:', {
+              enabled: videoTrack.enabled,
+              readyState: videoTrack.readyState,
+              id: videoTrack.id,
+              kind: videoTrack.kind,
+              muted: videoTrack.muted,
+              timestamp: Date.now()
+            });
+            
+            // If track is disabled but live, try to re-enable it
+            if (!videoTrack.enabled && videoTrack.readyState === 'live') {
+              console.log('Re-enabling disabled video track');
+              videoTrack.enabled = true;
+            }
+          }
+          
+          // Synchronize video state with track state
+          const isTrackEnabled = videoTrack.enabled;
+          if (isVideoOff !== !isTrackEnabled) {
+            console.log('Synchronizing video state:', { isTrackEnabled, isVideoOff: !isTrackEnabled });
+            setIsVideoOff(!isTrackEnabled);
+          }
+          
+          // If track has ended, try to get a new stream
+          if (videoTrack.readyState === 'ended' && localStreamRef.current) {
+            console.log('Video track ended, attempting to get new stream');
+            getUserMedia().catch(err => {
+              console.error('Failed to get new stream after track ended:', err);
+            });
+          }
+        } else {
+          console.error('No video track found');
+        }
+      }
+    };
+
+    checkVideoTrack();
+    // Check less frequently to reduce console spam
+    const interval = setInterval(checkVideoTrack, 5000);
+    return () => clearInterval(interval);
+  }, [getUserMedia, isVideoOff]);
+
+  // Force refresh video elements when remote video states change
+  useEffect(() => {
+    const refreshVideoElements = () => {
+      const videoElements = document.querySelectorAll('video[data-user-id]');
+      videoElements.forEach(video => {
+        const userId = video.dataset.userId;
+        const isVideoOff = remoteVideoStates[userId];
+        
+        if (video.srcObject) {
+          const videoTracks = video.srcObject.getVideoTracks();
+          videoTracks.forEach(track => {
+            if (track.readyState === 'live') {
+              track.enabled = !isVideoOff;
+            }
+          });
+          
+          // Force play if video is enabled
+          if (!isVideoOff && video.paused) {
+            video.play().catch(err => {
+              if (err.name !== 'AbortError') {
+                console.warn('Force play after video state change failed:', err);
+              }
+            });
+          }
+        }
+      });
+    };
+
+    // Small delay to ensure state is updated
+    const timeoutId = setTimeout(refreshVideoElements, 100);
+    return () => clearTimeout(timeoutId);
+  }, [remoteVideoStates]);
+
+  // Periodic video state sync to ensure consistency
+  useEffect(() => {
+    const syncVideoStates = () => {
+      if (!localStreamRef.current) return;
+      
+      const videoTrack = localStreamRef.current.getVideoTracks()[0];
+      if (videoTrack && videoTrack.readyState === 'live') {
+        const actualTrackEnabled = videoTrack.enabled;
+        const expectedVideoOff = isVideoOff;
+        
+        // Sync if there's a mismatch
+        if (actualTrackEnabled === expectedVideoOff) {
+          console.log('Syncing video state mismatch:', { actualTrackEnabled, expectedVideoOff });
+          videoTrack.enabled = !expectedVideoOff;
+          
+          // Emit state change to ensure remote peers are updated
+          if (roomId) {
+            socket.emit('videoStateChange', {
+              roomId,
+              isVideoOff: expectedVideoOff
+            });
+          }
+        }
+      }
+    };
+
+    const interval = setInterval(syncVideoStates, 3000);
+    return () => clearInterval(interval);
+  }, [isVideoOff, roomId]);
+
+  // Add a retry button to the error container
+
+  const ErrorContainer = ({ error, onRetry, onDismiss }) => (
+    <div className="error-container">
+      <h2>Error</h2>
+      <p>{error}</p>
+      <div className="error-buttons">
+        <button onClick={onRetry}>Try Again</button>
+        <button onClick={onDismiss}>Continue Without Camera</button>
+      </div>
+    </div>
+  );
+
+  ErrorContainer.propTypes = {
+    error: PropTypes.string.isRequired,
+    onRetry: PropTypes.func.isRequired,
+    onDismiss: PropTypes.func.isRequired,
+  };
+
+  // Add this function to detect active speaker
+  const handleSpeakingStateChange = useCallback((userId, speaking) => {
+    if (speaking) {
+      setActiveSpeaker(userId);
+      // Reset active speaker after 2 seconds of silence
+      setTimeout(() => {
+        setActiveSpeaker(prev => prev === userId ? null : prev);
+      }, 2000);
+    }
+  }, []);
+
+  // Add this useEffect for audio analysis
+  useEffect(() => {
+    if (localStreamRef.current) {
+      const audioContext = new AudioContext();
+      const audioSource = audioContext.createMediaStreamSource(localStreamRef.current);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.minDecibels = -70;
+      analyser.maxDecibels = -10;
+      analyser.smoothingTimeConstant = 0.4;
+
+      audioSource.connect(analyser);
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      let speakingTimeout;
+
+      const checkAudioLevel = () => {
+        if (audioContext.state === 'closed') return;
+
+        analyser.getByteFrequencyData(dataArray);
+        const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+
+        if (average > 20) { // Adjust threshold as needed
+          handleSpeakingStateChange(socket.id, true);
+        }
+
+        requestAnimationFrame(checkAudioLevel);
+      };
+
+      checkAudioLevel();
+
+      return () => {
+        audioContext.close();
+        clearTimeout(speakingTimeout);
+      };
+    }
+  }, [localStreamRef.current]);
+
+  // Update ParticipantList rendering with null checks
+  const renderParticipantList = () => {
+    if (!Array.isArray(participants)) return null;
+
+    return (
+      <ParticipantList
+        participants={participants.filter(p => p && p.id)} // Filter out invalid participants
+        activeParticipant={activeSpeaker}
+        localUser={socket?.id ? { id: socket.id, isHost } : null}
+        showParticipants={showParticipants}
+      />
+    );
+  };
+
+  // Update video rendering with null checks
+  const renderRemoteVideos = () => {
+    console.log('Rendering remote streams:', remoteStreams);
+
+    return remoteStreams.map((streamInfo) => {
+      if (!streamInfo || !streamInfo.userId || !streamInfo.stream) return null;
+
+      // Don't render self as remote video
+      if (streamInfo.userId === (localUserId || socket?.id)) return null;
+
+      const participant = participants.find(p => p?.id === streamInfo.userId);
+      const username = participant?.username || 'Participant';
+
+      console.log("Rendering video for:", username);
+
+      return (
+        <div key={streamInfo.userId} className="video-container">
+          {remoteVideoStates[streamInfo.userId] ? (
+            <div className="video-error">
+              <span className="material-symbols-outlined">videocam_off</span>
+              <p>Camera turned off</p>
+            </div>
+          ) : (
+                         <video
+               key={`video-${streamInfo.userId}-${Date.now()}`}
+               data-user-id={streamInfo.userId}
+               autoPlay
+               playsInline
+               muted={false}
+               ref={(el) => {
+                 if (el && streamInfo.stream) {
+                   // Always set srcObject to ensure it's current
+                   el.srcObject = streamInfo.stream;
+                   console.log(`Video ${streamInfo.userId} loaded`);
+                   
+                   // Check if stream has tracks
+                   const tracks = streamInfo.stream.getTracks();
+                   console.log(`Stream tracks for ${streamInfo.userId}:`, tracks.map(t => ({ kind: t.kind, enabled: t.enabled, readyState: t.readyState })));
+                   
+                   // Force enable video tracks
+                   tracks.forEach(track => {
+                     if (track.kind === 'video' && !track.enabled && track.readyState === 'live') {
+                       console.log(`Force enabling video track for ${streamInfo.userId}`);
+                       track.enabled = true;
+                     }
+                   });
+
+                   // Only set up event handlers if they haven't been set
+                   if (!el._handlersSet) {
+                     el.onloadedmetadata = () => {
+                       console.log(`Video metadata loaded for ${streamInfo.userId}`);
+                       // Force play after metadata is loaded
+                       setTimeout(() => {
+                         if (el.srcObject && el.paused) {
+                           el.play().catch(err => {
+                             if (err.name !== 'AbortError') {
+                               console.warn("Playback error:", err);
+                             }
+                           });
+                         }
+                       }, 100);
+                     };
+
+                     el.oncanplay = () => {
+                       console.log(`Video can play for ${streamInfo.userId}`);
+                       // Force play when ready
+                       setTimeout(() => {
+                         if (el.srcObject && el.paused) {
+                           el.play().catch(err => {
+                             if (err.name !== 'AbortError') {
+                               console.warn("Canplay play failed:", err);
+                             }
+                           });
+                         }
+                       }, 100);
+                     };
+
+                     el.onplay = () => {
+                       console.log(`Video started playing for ${streamInfo.userId}`);
+                     };
+
+                     el.onerror = (e) => {
+                       console.error(`Video error for ${streamInfo.userId}:`, e);
+                     };
+
+                     el.onstalled = () => {
+                       console.warn(`Video stalled for ${streamInfo.userId}`);
+                     };
+
+                     el.onwaiting = () => {
+                       console.warn(`Video waiting for ${streamInfo.userId}`);
+                       // Add detailed debugging for waiting state
+                       console.log(`Video waiting details for ${streamInfo.userId}:`, {
+                         readyState: el.readyState,
+                         networkState: el.networkState,
+                         paused: el.paused,
+                         currentTime: el.currentTime,
+                         duration: el.duration,
+                         hasSrcObject: !!el.srcObject,
+                         streamActive: el.srcObject?.active,
+                         trackCount: el.srcObject?.getTracks().length,
+                         tracks: el.srcObject?.getTracks().map(t => ({
+                           kind: t.kind,
+                           enabled: t.enabled,
+                           readyState: t.readyState,
+                           muted: t.muted
+                         }))
+                       });
+                       
+                       // Check if this is a remote stream and log connection status
+                       if (streamInfo.userId !== socket?.id) {
+                         const pc = peerConnectionsRef.current[streamInfo.userId];
+                         if (pc) {
+                           console.log(`Peer connection status for ${streamInfo.userId}:`, {
+                             connectionState: pc.connectionState,
+                             iceConnectionState: pc.iceConnectionState,
+                             signalingState: pc.signalingState
+                           });
+                         } else {
+                           console.warn(`No peer connection found for ${streamInfo.userId}`);
+                         }
+                       }
+                     };
+
+                     el._handlersSet = true;
+                   }
+                   
+                   // Force play immediately if ready
+                   if (el.readyState >= 2) {
+                     setTimeout(() => {
+                       if (el.paused) {
+                         el.play().catch(err => {
+                           if (err.name !== 'AbortError') {
+                             console.warn("Immediate play failed:", err);
+                           }
+                         });
+                       }
+                     }, 100);
+                   }
+                 }
+               }}
+               className="video-item"
+               style={{ transform: 'scaleX(-1)' }}
+             />
+          )}
+          <div className="participant-name">{username}</div>
+        </div>
+      );
+    }).filter(Boolean);
+  };
+
   // Add socket connection status check
   useEffect(() => {
     const checkSocketConnection = () => {
-      if (!socket || !socket.connected) {
+      if (!socket) {
+        console.warn('No socket instance available');
+        setConnectionStatus('disconnected');
+        setError('Socket connection not available');
+        return;
+      }
+
+      if (!socket.connected) {
         console.warn('Socket disconnected, attempting to reconnect...');
         setConnectionStatus('disconnected');
-        // Don't set error immediately, let socket.io handle reconnection
+        
+        // Try to reconnect if not already attempting
+        if (!socket.connected && !socket.connecting) {
+          console.log('Manually attempting socket reconnection...');
+          socket.connect();
+        }
+        
+        // Set error message for user feedback
+        setError('Connection lost. Attempting to reconnect...');
       } else {
+        console.log('Socket connection is healthy');
         setConnectionStatus('connected');
         setError(null); // Clear any connection errors
       }
     };
 
+    // Check connection status immediately
+    checkSocketConnection();
+    
     // Check less frequently to reduce console spam
-    const interval = setInterval(checkSocketConnection, 10000);
+    const interval = setInterval(checkSocketConnection, 5000);
     return () => clearInterval(interval);
   }, [socket]);
   // Remove redundant local stream ref setting
@@ -1796,6 +2436,196 @@ const VideoChat = () => {
              style={{ backgroundColor: '#28a745', color: 'white' }}
            >
              Force Call
+           </button>
+           <button
+             onClick={() => {
+               console.log('=== MANUAL SOCKET RECONNECTION ===');
+               if (socket) {
+                 if (socket.connected) {
+                   console.log('Socket is already connected');
+                 } else {
+                   console.log('Attempting manual socket reconnection...');
+                   socket.connect();
+                 }
+               } else {
+                 console.error('No socket instance available');
+               }
+               console.log('=== END SOCKET RECONNECTION ===');
+             }}
+             className="debug-button"
+             style={{ backgroundColor: '#ffc107', color: 'black' }}
+           >
+             Reconnect
+           </button>
+           <button
+             onClick={() => {
+               console.log('=== CONNECTION STATUS DEBUG ===');
+               console.log('Room ID:', roomId);
+               console.log('Is Host:', isHost);
+               console.log('Is Joined:', isJoined);
+               console.log('Participants:', participants);
+               console.log('Local Stream:', localStreamRef.current);
+               console.log('Remote Streams:', remoteStreams);
+               
+               // Check peer connections
+               Object.entries(peerConnectionsRef.current).forEach(([userId, pc]) => {
+                 console.log(`Peer Connection ${userId}:`, {
+                   signalingState: pc.signalingState,
+                   connectionState: pc.connectionState,
+                   iceConnectionState: pc.iceConnectionState,
+                   hasLocalDescription: !!pc.localDescription,
+                   hasRemoteDescription: !!pc.remoteDescription,
+                   localDescriptionType: pc.localDescription?.type,
+                   remoteDescriptionType: pc.remoteDescription?.type
+                 });
+               });
+               
+               // Check video elements
+               const videos = document.querySelectorAll('video');
+               console.log(`Found ${videos.length} video elements`);
+               videos.forEach((video, index) => {
+                 console.log(`Video ${index}:`, {
+                   srcObject: !!video.srcObject,
+                   paused: video.paused,
+                   readyState: video.readyState,
+                   userId: video.dataset.userId || 'local'
+                 });
+               });
+               
+               console.log('=== END CONNECTION STATUS DEBUG ===');
+             }}
+             className="debug-button"
+             style={{ backgroundColor: '#17a2b8', color: 'white' }}
+           >
+             Status
+           </button>
+           <button
+             onClick={() => {
+               console.log('=== MANUAL VIDEO TEST ===');
+               
+               // Check local stream directly
+               if (localStreamRef.current) {
+                 const videoTrack = localStreamRef.current.getVideoTracks()[0];
+                 if (videoTrack) {
+                   console.log('Local video track status:', {
+                     enabled: videoTrack.enabled,
+                     readyState: videoTrack.readyState,
+                     id: videoTrack.id,
+                     kind: videoTrack.kind,
+                     muted: videoTrack.muted
+                   });
+                   
+                   // Force fix if needed
+                   if (!videoTrack.enabled && videoTrack.readyState === 'live') {
+                     console.log('Force fixing local video track');
+                     videoTrack.enabled = true;
+                     setIsVideoOff(false);
+                   }
+                 }
+               }
+               
+               const videos = document.querySelectorAll('video');
+               videos.forEach((video, index) => {
+                 console.log(`Video ${index}:`, {
+                   srcObject: !!video.srcObject,
+                   paused: video.paused,
+                   readyState: video.readyState,
+                   userId: video.dataset.userId || 'local'
+                 });
+                 if (video.srcObject) {
+                   const stream = video.srcObject;
+                   const tracks = stream.getTracks();
+                   console.log(`Stream tracks:`, tracks.map(t => ({
+                     kind: t.kind,
+                     enabled: t.enabled,
+                     readyState: t.readyState,
+                     id: t.id,
+                     muted: t.muted
+                   })));
+                   
+                   // Force enable all video tracks
+                   tracks.forEach(track => {
+                     if (track.kind === 'video' && !track.enabled && track.readyState === 'live') {
+                       console.log(`Force enabling video track for ${video.dataset.userId || 'local'}`);
+                       track.enabled = true;
+                     }
+                   });
+                   
+                   // Force play video
+                   if (video.paused) {
+                     video.play().catch(err => {
+                       if (err.name !== 'AbortError') {
+                         console.warn('Force play failed:', err);
+                       }
+                     });
+                   }
+                 }
+               });
+               console.log('=== END TEST ===');
+               
+               // Additional video toggle debugging
+               console.log('=== VIDEO TOGGLE DEBUG ===');
+               console.log('Local video state:', { isVideoOff });
+               console.log('Remote video states:', remoteVideoStates);
+               console.log('Peer connections:', Object.keys(peerConnectionsRef.current));
+               
+               // Check if video state change events are working
+               if (localStreamRef.current) {
+                 const videoTrack = localStreamRef.current.getVideoTracks()[0];
+                 console.log('Current video track state:', {
+                   enabled: videoTrack?.enabled,
+                   readyState: videoTrack?.readyState,
+                   muted: videoTrack?.muted
+                 });
+               }
+               
+               // Test video state change emission
+               console.log('Testing video state change emission...');
+               socket.emit('videoStateChange', {
+                 roomId,
+                 isVideoOff: !isVideoOff
+               });
+               console.log('=== END VIDEO TOGGLE DEBUG ===');
+               
+               // Test video toggle functionality
+               console.log('=== TESTING VIDEO TOGGLE ===');
+               if (localStreamRef.current) {
+                 const videoTracks = localStreamRef.current.getVideoTracks();
+                 const currentState = videoTracks[0]?.enabled;
+                 console.log('Current video track enabled:', currentState);
+                 
+                 // Toggle video track
+                 videoTracks.forEach(track => {
+                   track.enabled = !currentState;
+                 });
+                 
+                 console.log('Video track toggled to:', !currentState);
+                 
+                 // Replace track in peer connections
+                 Object.values(peerConnectionsRef.current).forEach(peerConnection => {
+                   const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+                   if (sender && videoTracks[0]) {
+                     console.log('Replacing video track in peer connection for test');
+                     sender.replaceTrack(videoTracks[0]).catch(err => {
+                       console.error('Test track replacement failed:', err);
+                     });
+                   }
+                 });
+                 
+                 // Emit state change
+                 socket.emit('videoStateChange', {
+                   roomId,
+                   isVideoOff: currentState
+                 });
+                 
+                 console.log('Video state change emitted');
+               }
+               console.log('=== END TESTING VIDEO TOGGLE ===');
+             }}
+             className="debug-button"
+             style={{ backgroundColor: '#ff6b6b', color: 'white' }}
+           >
+             Debug
            </button>
         </div>
       </div>
