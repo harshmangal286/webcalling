@@ -177,6 +177,17 @@ io.on('connection', (socket) => {
             speaking
         });
     });
+
+    // Handle video state changes
+    socket.on('videoStateChange', ({ roomId, isVideoOff }) => {
+        const user = users.get(socket.id);
+        if (user && rooms.has(roomId)) {
+            socket.to(roomId).emit('videoStateChanged', {
+                userId: socket.id,
+                isVideoOff
+            });
+        }
+    });
 });
 
 // Helper functions

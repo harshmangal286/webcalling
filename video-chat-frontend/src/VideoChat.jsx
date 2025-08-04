@@ -211,6 +211,7 @@ const VideoChat = () => {
 
       // Improved track handling
       peerConnection.ontrack = (event) => {
+        console.log("=== ONTRACK EVENT ===");
         console.log("ontrack fired from user:", userId, "Streams:", event.streams);
         console.log("ontrack event details:", {
           track: event.track,
@@ -219,6 +220,8 @@ const VideoChat = () => {
           trackEnabled: event.track?.enabled,
           trackReadyState: event.track?.readyState
         });
+        console.log("Current remote streams count:", remoteStreams.length);
+        console.log("=== END ONTRACK EVENT ===");
 
         if (!event.streams || !event.streams[0]) {
           console.warn("Received ontrack without stream");
@@ -250,15 +253,20 @@ const VideoChat = () => {
         });
 
         setRemoteStreams(prevStreams => {
+          console.log(`Setting remote streams. Previous count: ${prevStreams.length}`);
           const exists = prevStreams.find(s => s.userId === userId);
           if (exists) {
-            console.log(`Updating existing stream for ${userId}`);
-            return prevStreams.map(s =>
-              s.userId === userId ? { ...s, stream: newStream } : s
+            console.log(`Updating existing stream for ${userId} (track replacement)`);
+            const updated = prevStreams.map(s =>
+              s.userId === userId ? { ...s, stream: newStream, videoOff: false } : s
             );
+            console.log(`Updated streams count: ${updated.length}`);
+            return updated;
           }
           console.log(`Adding new stream for ${userId}`);
-          return [...prevStreams, { userId, stream: newStream }];
+          const updated = [...prevStreams, { userId, stream: newStream, videoOff: false }];
+          console.log(`New streams count: ${updated.length}`);
+          return updated;
         });
 
         // Set track.onended for cleanup and ensure tracks are enabled
@@ -277,6 +285,15 @@ const VideoChat = () => {
           };
           track.onunmute = () => {
             console.log("Track unmuted:", track.kind, "for user:", userId);
+          };
+          
+          // Handle track replacement events
+          track.onended = () => {
+            console.log("Track ended:", track.kind, "for user:", userId);
+            // Force refresh remote streams when track ends
+            setRemoteStreams(prev => prev.map(s => 
+              s.userId === userId ? { ...s, stream: newStream } : s
+            ));
           };
         });
       };
@@ -346,9 +363,9 @@ const VideoChat = () => {
             console.log('Enabling video track before adding to peer connection');
             videoTrack.enabled = true;
           }
-          console.log('Adding video track to peer connection');
+          console.log('Adding video track to peer connection for user:', userId);
           const sender = peerConnection.addTrack(videoTrack, localStreamRef.current);
-          console.log('Video track sender:', sender);
+          console.log('Video track sender for user:', userId, sender);
         }
         if (audioTrack) {
           // Ensure audio track is enabled
@@ -816,6 +833,50 @@ const VideoChat = () => {
         ...prev,
         [userId]: isVideoOff
       }));
+      
+      // If video is turned off, we might not have a stream, so ensure we have an entry
+      if (isVideoOff) {
+        setRemoteStreams(prev => {
+          const exists = prev.find(s => s.userId === userId);
+          if (!exists) {
+            console.log(`Adding placeholder stream for ${userId} (video off)`);
+            // Create a placeholder stream entry for users with video off
+            return [...prev, { userId, stream: null, videoOff: true }];
+          }
+          return prev;
+        });
+      } else {
+        // If video is turned on, ensure we have a proper stream entry
+        setRemoteStreams(prev => {
+          const exists = prev.find(s => s.userId === userId);
+          if (exists && exists.videoOff) {
+            console.log(`Removing placeholder stream for ${userId} (video on)`);
+            // Remove placeholder entry when video is turned back on
+            return prev.filter(s => s.userId !== userId);
+          }
+          return prev;
+        });
+      }
+      
+      // Force refresh remote streams to ensure video state is properly reflected
+      setRemoteStreams(prev => {
+        const updated = prev.map(streamInfo => {
+          if (streamInfo.userId === userId && streamInfo.stream) {
+            // Force enable/disable video tracks based on state
+            const videoTracks = streamInfo.stream.getVideoTracks();
+            videoTracks.forEach(track => {
+              if (track.readyState === 'live') {
+                track.enabled = !isVideoOff;
+              }
+            });
+            
+            // Force refresh the stream object to trigger re-render
+            return { ...streamInfo, stream: streamInfo.stream };
+          }
+          return streamInfo;
+        });
+        return updated;
+      });
     });
 
 
@@ -840,6 +901,16 @@ const VideoChat = () => {
         ...prev,
         [user.id]: false
       }));
+
+      // Add placeholder stream entry for new user
+      setRemoteStreams(prev => {
+        const exists = prev.find(s => s.userId === user.id);
+        if (!exists) {
+          console.log(`Adding placeholder stream for new user ${user.id}`);
+          return [...prev, { userId: user.id, stream: null, videoOff: false }];
+        }
+        return prev;
+      });
 
       // All existing users (including host) initiate calls with the new user
       console.log('Initiating call with new user:', user.id);
@@ -926,6 +997,17 @@ const VideoChat = () => {
       
       console.log('Video toggled:', { trackEnabled: newTrackEnabled, isVideoOff: !newTrackEnabled });
 
+      // Replace track in all peer connections to ensure remote peers get the updated track
+      Object.values(peerConnectionsRef.current).forEach(peerConnection => {
+        const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+        if (sender && videoTracks[0]) {
+          console.log('Replacing video track in peer connection');
+          sender.replaceTrack(videoTracks[0]).catch(err => {
+            console.error('Error replacing video track:', err);
+          });
+        }
+      });
+
       // Let others know I turned my camera off/on
       socket.emit('videoStateChange', {
         roomId,
@@ -943,6 +1025,14 @@ const VideoChat = () => {
           }
         }, 100);
       }
+      
+      // Force refresh remote streams after a delay to ensure changes propagate
+      setTimeout(() => {
+        setRemoteStreams(prev => prev.map(streamInfo => ({
+          ...streamInfo,
+          stream: streamInfo.stream
+        })));
+      }, 200);
     }
   };
 
@@ -1120,21 +1210,36 @@ const VideoChat = () => {
           if (!videoTrack.enabled || (videoTrack.readyState !== 'live' && videoTrack.readyState !== 'ended')) {
             console.warn('Video track issue:', {
               enabled: videoTrack.enabled,
-              readyState: videoTrack.readyState
+              readyState: videoTrack.readyState,
+              id: videoTrack.id,
+              kind: videoTrack.kind,
+              muted: videoTrack.muted,
+              timestamp: Date.now()
             });
             
-            // If track is disabled but live, try to re-enable it
-            if (!videoTrack.enabled && videoTrack.readyState === 'live') {
-              console.log('Re-enabling disabled video track');
+            // Only re-enable if the user hasn't intentionally disabled it
+            if (!videoTrack.enabled && videoTrack.readyState === 'live' && !isVideoOff) {
+              console.log('Re-enabling disabled video track (not intentionally disabled)');
               videoTrack.enabled = true;
             }
           }
           
-          // Synchronize video state with track state
+          // Synchronize video state with track state, but respect user's intentional changes
           const isTrackEnabled = videoTrack.enabled;
           if (isVideoOff !== !isTrackEnabled) {
-            console.log('Synchronizing video state:', { isTrackEnabled, isVideoOff: !isTrackEnabled });
-            setIsVideoOff(!isTrackEnabled);
+            // Only sync if the track state doesn't match the intended state
+            // This prevents overriding user's intentional video toggle
+            console.log('Video state mismatch detected:', { 
+              isTrackEnabled, 
+              isVideoOff, 
+              intendedTrackState: !isVideoOff 
+            });
+            
+            // Only update if the track is in an unexpected state
+            if (isTrackEnabled !== !isVideoOff) {
+              console.log('Correcting track state to match user intention');
+              videoTrack.enabled = !isVideoOff;
+            }
           }
           
           // If track has ended, try to get a new stream
@@ -1155,6 +1260,69 @@ const VideoChat = () => {
     const interval = setInterval(checkVideoTrack, 5000);
     return () => clearInterval(interval);
   }, [getUserMedia, isVideoOff]);
+
+  // Force refresh video elements when remote video states change
+  useEffect(() => {
+    const refreshVideoElements = () => {
+      const videoElements = document.querySelectorAll('video[data-user-id]');
+      videoElements.forEach(video => {
+        const userId = video.dataset.userId;
+        const isVideoOff = remoteVideoStates[userId];
+        
+        if (video.srcObject) {
+          const videoTracks = video.srcObject.getVideoTracks();
+          videoTracks.forEach(track => {
+            if (track.readyState === 'live') {
+              track.enabled = !isVideoOff;
+            }
+          });
+          
+          // Force play if video is enabled
+          if (!isVideoOff && video.paused) {
+            video.play().catch(err => {
+              if (err.name !== 'AbortError') {
+                console.warn('Force play after video state change failed:', err);
+              }
+            });
+          }
+        }
+      });
+    };
+
+    // Small delay to ensure state is updated
+    const timeoutId = setTimeout(refreshVideoElements, 100);
+    return () => clearTimeout(timeoutId);
+  }, [remoteVideoStates]);
+
+  // Periodic video state sync to ensure consistency
+  useEffect(() => {
+    const syncVideoStates = () => {
+      if (!localStreamRef.current) return;
+      
+      const videoTrack = localStreamRef.current.getVideoTracks()[0];
+      if (videoTrack && videoTrack.readyState === 'live') {
+        const actualTrackEnabled = videoTrack.enabled;
+        const expectedVideoOff = isVideoOff;
+        
+        // Sync if there's a mismatch
+        if (actualTrackEnabled === expectedVideoOff) {
+          console.log('Syncing video state mismatch:', { actualTrackEnabled, expectedVideoOff });
+          videoTrack.enabled = !expectedVideoOff;
+          
+          // Emit state change to ensure remote peers are updated
+          if (roomId) {
+            socket.emit('videoStateChange', {
+              roomId,
+              isVideoOff: expectedVideoOff
+            });
+          }
+        }
+      }
+    };
+
+    const interval = setInterval(syncVideoStates, 3000);
+    return () => clearInterval(interval);
+  }, [isVideoOff, roomId]);
 
   // Add a retry button to the error container
 
@@ -1243,24 +1411,25 @@ const VideoChat = () => {
     console.log('Rendering remote streams:', remoteStreams);
 
     return remoteStreams.map((streamInfo) => {
-      if (!streamInfo || !streamInfo.userId || !streamInfo.stream) return null;
+      if (!streamInfo || !streamInfo.userId) return null;
 
       // Don't render self as remote video
       if (streamInfo.userId === (localUserId || socket?.id)) return null;
 
       const participant = participants.find(p => p?.id === streamInfo.userId);
       const username = participant?.username || 'Participant';
+      const isVideoOff = remoteVideoStates[streamInfo.userId] || streamInfo.videoOff;
 
-      console.log("Rendering video for:", username);
+      console.log("Rendering video for:", username, "video off:", isVideoOff);
 
       return (
         <div key={streamInfo.userId} className="video-container">
-          {remoteVideoStates[streamInfo.userId] ? (
+          {isVideoOff ? (
             <div className="video-error">
               <span className="material-symbols-outlined">videocam_off</span>
               <p>Camera turned off</p>
             </div>
-          ) : (
+          ) : streamInfo.stream ? (
                          <video
                key={`video-${streamInfo.userId}-${Date.now()}`}
                data-user-id={streamInfo.userId}
@@ -1351,7 +1520,7 @@ const VideoChat = () => {
                className="video-item"
                style={{ transform: 'scaleX(-1)' }}
              />
-          )}
+          ) : null}
           <div className="participant-name">{username}</div>
         </div>
       );
@@ -1688,6 +1857,28 @@ const VideoChat = () => {
            <button
              onClick={() => {
                console.log('=== MANUAL VIDEO TEST ===');
+               
+               // Check local stream directly
+               if (localStreamRef.current) {
+                 const videoTrack = localStreamRef.current.getVideoTracks()[0];
+                 if (videoTrack) {
+                   console.log('Local video track status:', {
+                     enabled: videoTrack.enabled,
+                     readyState: videoTrack.readyState,
+                     id: videoTrack.id,
+                     kind: videoTrack.kind,
+                     muted: videoTrack.muted
+                   });
+                   
+                   // Force fix if needed
+                   if (!videoTrack.enabled && videoTrack.readyState === 'live') {
+                     console.log('Force fixing local video track');
+                     videoTrack.enabled = true;
+                     setIsVideoOff(false);
+                   }
+                 }
+               }
+               
                const videos = document.querySelectorAll('video');
                videos.forEach((video, index) => {
                  console.log(`Video ${index}:`, {
@@ -1702,7 +1893,9 @@ const VideoChat = () => {
                    console.log(`Stream tracks:`, tracks.map(t => ({
                      kind: t.kind,
                      enabled: t.enabled,
-                     readyState: t.readyState
+                     readyState: t.readyState,
+                     id: t.id,
+                     muted: t.muted
                    })));
                    
                    // Force enable all video tracks
@@ -1724,11 +1917,95 @@ const VideoChat = () => {
                  }
                });
                console.log('=== END TEST ===');
+               
+               // Additional video toggle debugging
+               console.log('=== VIDEO TOGGLE DEBUG ===');
+               console.log('Local video state:', { isVideoOff });
+               console.log('Remote video states:', remoteVideoStates);
+               console.log('Peer connections:', Object.keys(peerConnectionsRef.current));
+               
+               // Check if video state change events are working
+               if (localStreamRef.current) {
+                 const videoTrack = localStreamRef.current.getVideoTracks()[0];
+                 console.log('Current video track state:', {
+                   enabled: videoTrack?.enabled,
+                   readyState: videoTrack?.readyState,
+                   muted: videoTrack?.muted
+                 });
+               }
+               
+               // Test video state change emission
+               console.log('Testing video state change emission...');
+               socket.emit('videoStateChange', {
+                 roomId,
+                 isVideoOff: !isVideoOff
+               });
+               console.log('=== END VIDEO TOGGLE DEBUG ===');
+               
+               // Test video toggle functionality
+               console.log('=== TESTING VIDEO TOGGLE ===');
+               if (localStreamRef.current) {
+                 const videoTracks = localStreamRef.current.getVideoTracks();
+                 const currentState = videoTracks[0]?.enabled;
+                 console.log('Current video track enabled:', currentState);
+                 
+                 // Toggle video track
+                 videoTracks.forEach(track => {
+                   track.enabled = !currentState;
+                 });
+                 
+                 console.log('Video track toggled to:', !currentState);
+                 
+                 // Replace track in peer connections
+                 Object.values(peerConnectionsRef.current).forEach(peerConnection => {
+                   const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+                   if (sender && videoTracks[0]) {
+                     console.log('Replacing video track in peer connection for test');
+                     sender.replaceTrack(videoTracks[0]).catch(err => {
+                       console.error('Test track replacement failed:', err);
+                     });
+                   }
+                 });
+                 
+                 // Emit state change
+                 socket.emit('videoStateChange', {
+                   roomId,
+                   isVideoOff: currentState
+                 });
+                 
+                 console.log('Video state change emitted');
+               }
+               console.log('=== END TESTING VIDEO TOGGLE ===');
              }}
              className="debug-button"
              style={{ backgroundColor: '#ff6b6b', color: 'white' }}
            >
              Debug
+           </button>
+           
+           <button
+             onClick={() => {
+               console.log('=== REMOTE STREAMS DEBUG ===');
+               console.log('Remote streams:', remoteStreams);
+               console.log('Remote video states:', remoteVideoStates);
+               console.log('Participants:', participants);
+               
+               remoteStreams.forEach((streamInfo, index) => {
+                 console.log(`Stream ${index}:`, {
+                   userId: streamInfo.userId,
+                   hasStream: !!streamInfo.stream,
+                   videoOff: streamInfo.videoOff,
+                   videoState: remoteVideoStates[streamInfo.userId],
+                   participant: participants.find(p => p.id === streamInfo.userId)
+                 });
+               });
+               
+               console.log('=== END REMOTE STREAMS DEBUG ===');
+             }}
+             className="debug-button"
+             style={{ backgroundColor: '#4ecdc4', color: 'white', marginLeft: '10px' }}
+           >
+             Debug Streams
            </button>
         </div>
       </div>
