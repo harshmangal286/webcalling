@@ -73,11 +73,13 @@ const VideoChat = () => {
   };
   useEffect(() => {
     if (localVideoRef.current && localStream) {
+      console.log("Setting local stream to video element");
       localVideoRef.current.srcObject = localStream;
 
       localVideoRef.current.onloadedmetadata = () => {
+        console.log("Local video metadata loaded from state");
         localVideoRef.current.play().catch((err) => {
-          console.error("Playback error:", err);
+          console.error("Local video playback error:", err);
         });
       };
     }
@@ -93,24 +95,39 @@ const VideoChat = () => {
     },
     audio: true
   }) => {
-    try {
-      if (localStreamRef.current) {
+    // If we already have an active stream, return it
+    if (localStreamRef.current && localStreamRef.current.active) {
+      const videoTrack = localStreamRef.current.getVideoTracks()[0];
+      const audioTrack = localStreamRef.current.getAudioTracks()[0];
+      
+      // Check if tracks are still live
+      if (videoTrack && videoTrack.readyState === 'live' && audioTrack && audioTrack.readyState === 'live') {
+        console.log("Returning existing active local stream");
+        return localStreamRef.current;
+      } else {
+        console.log("Existing stream has ended tracks, getting new stream");
+        // Stop the old stream
         localStreamRef.current.getTracks().forEach(track => track.stop());
+        localStreamRef.current = null;
       }
+    }
 
-      console.log("📹 Requesting local stream with constraints:", constraints);
+    try {
+      console.log("Requesting local stream with constraints:", constraints);
 
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       if (!stream) throw new Error("No stream received");
 
-      console.log("📹 Local stream obtained:", stream);
-      console.log("🎥 Video tracks:", stream.getVideoTracks());
+      console.log("Local stream obtained:", stream);
+      console.log("Video tracks:", stream.getVideoTracks());
 
       localStreamRef.current = stream;
+      setLocalStream(stream); // Also update the state
+      setVideoError(false); // Reset video error when we get a new stream
       return stream;
 
     } catch (videoError) {
-      console.warn("❌ Video error, falling back to audio-only", videoError);
+      console.warn("Video error, falling back to audio-only", videoError);
 
       try {
         const audioOnlyStream = await navigator.mediaDevices.getUserMedia({
@@ -121,49 +138,46 @@ const VideoChat = () => {
         if (!audioOnlyStream) throw new Error("No audio stream received");
 
         localStreamRef.current = audioOnlyStream;
+        setLocalStream(audioOnlyStream); // Also update the state
         setVideoError(true);
         setError("My camera isn't working, using audio only");
         return audioOnlyStream;
 
       } catch (audioError) {
-        console.error("❌ Failed to get even audio-only stream:", audioError);
+        console.error("Failed to get even audio-only stream:", audioError);
         setError("Media access failed completely.");
         return null;
       }
     }
-  }, [localStreamRef, setError, setVideoError]);
+  }, [setError, setVideoError]);
   // dependencies
 
 
+  // Single useEffect to initialize local stream and socket
   useEffect(() => {
-    const initLocalStream = async () => {
+    const initializeLocalStream = async () => {
       try {
-        const stream = await getUserMedia();
-
-
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-          localVideoRef.current.onloadedmetadata = () => {
-            localVideoRef.current.play().catch(err => {
-              console.warn('📛 Local video play failed:', err);
-
-            });
-          };
+        // Only initialize if we don't already have a stream
+        if (!localStreamRef.current) {
+          console.log('Initializing local stream on component mount');
+          const stream = await getUserMedia();
+          if (stream && localVideoRef.current) {
+            localVideoRef.current.srcObject = stream;
+          }
         }
-      } catch (err) {
-        console.error("Failed to initialize local stream:", err);
-        setVideoError(true);
-        setError("My camera isn't working, using audio only");
+      } catch (error) {
+        console.error('Failed to initialize stream on mount:', error);
       }
     };
 
-    initLocalStream();
-  }, [getUserMedia, localVideoRef, setVideoError, setError]);
-  useEffect(() => {
+    // Set local user ID when socket is available
     if (socket) {
-      setLocalUserId(socket.id); // This ensures localUserId is correct
+      setLocalUserId(socket.id);
     }
-  }, [socket]);
+
+    // Initialize stream
+    initializeLocalStream();
+  }, [socket, getUserMedia]);
 
   // Setup connection with another user
   const createPeerConnection = useCallback((userId) => {
@@ -178,10 +192,15 @@ const VideoChat = () => {
       };
 
       const peerConnection = new RTCPeerConnection(configuration);
+      
+      // Add connection state logging
+      peerConnection.onsignalingstatechange = () => {
+        console.log(`Signaling state (${userId}):`, peerConnection.signalingState);
+      };
 
       // Improved track handling
       peerConnection.ontrack = (event) => {
-        console.log("📹 ontrack fired from user:", userId, "Streams:", event.streams);
+        console.log("ontrack fired from user:", userId, "Streams:", event.streams);
 
         if (!event.streams || !event.streams[0]) {
           console.warn("Received ontrack without stream");
@@ -189,18 +208,17 @@ const VideoChat = () => {
         }
 
         const [newStream] = event.streams;
-        const effectiveUserId = localStream || socket?.id || userId; // Ensure we have a valid userId
-        console.log("📹 ontrack fired from user:", userId, "Effective userId:", effectiveUserId, "Streams:", event.streams);
         if (!newStream) {
           console.warn("No stream found in ontrack event");
           return;
         }
 
-        event.streams[0].getAudioTracks().forEach((track) => {
-          console.log(`[AUDIO] Incoming audio track:`, track);
-          console.log(`[AUDIO] Enabled: ${track.enabled}, Muted: ${track.muted}, ReadyState: ${track.readyState}`);
-        });
-        if (userId === effectiveUserId) return;
+        // Don't add our own stream as remote
+        if (userId === (localUserId || socket?.id)) {
+          console.log("Ignoring own stream in ontrack");
+          return;
+        }
+
         setRemoteStreams(prevStreams => {
           const exists = prevStreams.find(s => s.userId === userId);
           if (exists) {
@@ -219,34 +237,6 @@ const VideoChat = () => {
         });
       };
 
-      const pendingCandidates = {}; // userId -> array of ICE candidates
-
-      // Enhanced ICE handling
-      socket.on('ice-candidate', async ({ from, candidate }) => {
-        const pc = peerConnectionsRef.current[from];
-
-        if (!pc) {
-          console.warn('Peer connection not ready for ICE candidate from:', from);
-          return;
-        }
-
-        if (pc.remoteDescription && pc.remoteDescription.type) {
-          try {
-            await pc.addIceCandidate(new RTCIceCandidate(candidate));
-            console.log('Added ICE candidate from', from);
-          } catch (err) {
-            console.error('Error adding ICE candidate:', err);
-          }
-        } else {
-          // Buffer the candidate until remote description is set
-          if (!pendingCandidates[from]) pendingCandidates[from] = [];
-          pendingCandidates[from].push(candidate);
-          console.log('Buffered ICE candidate from', from);
-
-        }
-      });
-
-
       peerConnection.oniceconnectionstatechange = () => {
         console.log(`ICE connection state (${userId}):`, peerConnection.iceConnectionState);
         if (peerConnection.iceConnectionState === 'failed') {
@@ -258,38 +248,48 @@ const VideoChat = () => {
       peerConnection.onconnectionstatechange = () => {
         console.log(`Connection state (${userId}):`, peerConnection.connectionState);
         if (peerConnection.connectionState === 'failed') {
-          handleConnectionFailure(userId);
+          // Handle connection failure inline to avoid circular dependency
+          console.log('Handling connection failure for:', userId);
+          
+          // Clean up failed connection
+          if (peerConnectionsRef.current[userId]) {
+            peerConnectionsRef.current[userId].close();
+            delete peerConnectionsRef.current[userId];
+          }
+
+          // Remove failed streams
+          setRemoteStreams(prev => prev.filter(s => s.userId !== userId));
         }
       };
-      if (!peerConnectionsRef.current[userId]) {
-        const pc = new RTCPeerConnection(configuration);
 
-        // Attach ontrack handler here as needed...
+      // Handle ICE candidate generation
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate && roomId) {
+          console.log('Sending ICE candidate to:', userId);
+          socket.emit('candidate', {
+            to: userId,
+            candidate: event.candidate,
+            roomId
+          });
+        }
+      };
 
-        // ✅ Add local tracks
+      // Add local tracks to the peer connection
+      if (localStreamRef.current) {
         const videoTrack = localStreamRef.current.getVideoTracks()[0];
         const audioTrack = localStreamRef.current.getAudioTracks()[0];
-        if (videoTrack) pc.addTrack(videoTrack, localStreamRef.current);
-        if (audioTrack) pc.addTrack(audioTrack, localStreamRef.current);
-
-        peerConnectionsRef.current[userId] = pc;
+        
+        if (videoTrack) {
+          console.log('Adding video track to peer connection');
+          peerConnection.addTrack(videoTrack, localStreamRef.current);
+        }
+        if (audioTrack) {
+          console.log('Adding audio track to peer connection');
+          peerConnection.addTrack(audioTrack, localStreamRef.current);
+        }
       } else {
-        const pc = peerConnectionsRef.current[userId];
-        const existingTracks = pc.getSenders().map(sender => sender.track);
-
-        localStreamRef.current.getTracks().forEach(track => {
-          const alreadyAdded = existingTracks.some(t => t?.kind === track.kind);
-          if (!alreadyAdded) {
-            console.log("Adding track:", track.kind);
-            pc.addTrack(track, localStreamRef.current);
-          } else {
-            console.warn(`Track of kind ${track.kind} already added.`);
-          }
-        });
-
+        console.warn('No local stream available for peer connection');
       }
-
-
 
       // Store the connection
       peerConnectionsRef.current[userId] = peerConnection;
@@ -298,29 +298,25 @@ const VideoChat = () => {
       console.error('Error creating peer connection:', error);
       throw error;
     }
-  }, [roomId]);
+  }, [roomId, localUserId, socket]);
 
-  // Add connection failure handler
-  const handleConnectionFailure = useCallback((userId) => {
-    console.log('Handling connection failure for:', userId);
-
-    // Clean up failed connection
-    if (peerConnectionsRef.current[userId]) {
-      peerConnectionsRef.current[userId].close();
-      delete peerConnectionsRef.current[userId];
-    }
-
-    // Remove failed streams
-    setRemoteStreams(prev => prev.filter(s => s.userId !== userId));
-
-    // Attempt reconnection
-    setTimeout(() => {
-      if (isHost) {
-        console.log('Attempting reconnection...');
-        initiateCall(userId);
+  // Helper function to apply buffered ICE candidates
+  const applyBufferedCandidates = useCallback(async (userId, peerConnection, candidatesMap) => {
+    if (candidatesMap[userId] && candidatesMap[userId].length > 0) {
+      console.log('Applying', candidatesMap[userId].length, 'buffered ICE candidates for:', userId);
+      for (const cand of candidatesMap[userId]) {
+        try {
+          await peerConnection.addIceCandidate(new RTCIceCandidate(cand));
+          console.log('Successfully applied buffered ICE candidate for:', userId);
+        } catch (err) {
+          console.error('Error applying buffered ICE candidate for:', userId, err);
+        }
       }
-    }, 2000);
-  }, [isHost]);
+      delete candidatesMap[userId];
+    }
+  }, []);
+
+
 
   // Add track ended handler
   // const handleTrackEnded = useCallback((userId, track) => {
@@ -356,7 +352,7 @@ const VideoChat = () => {
   // Handle room joining
   const joinRoom = async (roomId, username) => {
     try {
-      console.log('Attempting to join room:', { roomId, username }); // Debug log
+      console.log('Attempting to join room:', { roomId, username });
 
       // Get media permissions first
       const stream = await getUserMedia();
@@ -365,14 +361,12 @@ const VideoChat = () => {
         return;
       }
       console.log('Media stream obtained successfully');
-      console.log("Video tracks:", stream.getVideoTracks());
 
       // Emit join room event
       socket.emit('joinRoom', { roomId, username });
 
       // Set connection status to connecting
       setConnectionStatus('connecting');
-      getUserMediaWithCheck();
 
     } catch (error) {
       console.error('Join room error:', error);
@@ -385,15 +379,21 @@ const VideoChat = () => {
     try {
       console.log('Initiating call with:', userId);
 
-      if (!localStreamRef.current) {
+      // Get roomId from state or socket
+      const currentRoomId = roomId || socket?.roomId;
+      if (!currentRoomId) {
+        console.error('No roomId available for call initiation');
+        console.log('Current roomId state:', roomId);
+        console.log('Socket roomId:', socket?.roomId);
+        return;
+      }
+
+      if (!localStreamRef.current || !localStreamRef.current.active) {
         console.log('Getting local stream before initiating call');
         localStreamRef.current = await getUserMedia();
       }
 
       const peerConnection = createPeerConnection(userId);
-
-      // Add all tracks from local stream
-
 
       // Create and send offer
       console.log('Creating offer for:', userId);
@@ -409,24 +409,47 @@ const VideoChat = () => {
       socket.emit('offer', {
         to: userId,
         offer,
-        roomId
+        roomId: currentRoomId
       });
 
     } catch (error) {
       console.error('Failed to initiate call:', error);
-      handleConnectionFailure(userId);
+      // Handle connection failure inline
+      console.log('Handling connection failure for:', userId);
+      
+      // Clean up failed connection
+      if (peerConnectionsRef.current[userId]) {
+        peerConnectionsRef.current[userId].close();
+        delete peerConnectionsRef.current[userId];
+      }
+
+      // Remove failed streams
+      setRemoteStreams(prev => prev.filter(s => s.userId !== userId));
     }
-  }, [roomId, socket]);
+  }, [roomId, socket, getUserMedia, createPeerConnection]);
   useEffect(() => {
     const videos = document.querySelectorAll('video');
     videos.forEach(video => {
-      video.play().catch((err) => {
-        console.warn('Autoplay blocked, will retry on interaction', err);
-      });
+      if (video.srcObject && video.paused) {
+        video.play().catch((err) => {
+          if (err.name !== 'AbortError') {
+            console.warn('Autoplay blocked, will retry on interaction', err);
+          }
+        });
+      }
     });
 
     const retry = () => {
-      videos.forEach(video => video.play().catch(() => { }));
+      const videos = document.querySelectorAll('video');
+      videos.forEach(video => {
+        if (video.srcObject && video.paused) {
+          video.play().catch((err) => {
+            if (err.name !== 'AbortError') {
+              console.warn('Manual play failed on interaction:', err);
+            }
+          });
+        }
+      });
     };
 
     document.addEventListener('click', retry);
@@ -436,23 +459,31 @@ const VideoChat = () => {
   // Socket event handlers
   useEffect(() => {
     socket.on('roomCreated', ({ roomId }) => {
+      console.log('Room created event received:', roomId);
+      
       if (!roomId) {
         console.error('No roomId received');
         return;
       }
+      
       setRoomId(roomId);
       setIsHost(true);
       setConnectionStatus('connected');
       setIsJoined(true);
       clearChat();
-      navigator.clipboard.writeText(roomId);
-      alert(`Room created! Room ID: ${roomId} (copied to clipboard)`);
-      console.log('Room created:', roomId);
-      const roomLink = `${window.location.origin}/room/${roomId}`;
-      console.log('Room link:', roomLink);
-      window.history.pushState({}, '', roomLink);
-      console.log('Room link updated in URL:', window.location.href);
-      alert(`Room created! Room link: ${roomLink}`);
+      
+      try {
+        navigator.clipboard.writeText(roomId);
+        console.log('Room created:', roomId);
+        const roomLink = `${window.location.origin}/room/${roomId}`;
+        console.log('Room link:', roomLink);
+        window.history.pushState({}, '', roomLink);
+        console.log('Room link updated in URL:', window.location.href);
+        alert(`Room created! Room ID: ${roomId} (copied to clipboard)`);
+      } catch (error) {
+        console.error('Error copying room ID to clipboard:', error);
+        alert(`Room created! Room ID: ${roomId}`);
+      }
     });
 
     socket.on('roomJoined', ({ roomId, users, isHost }) => {
@@ -464,82 +495,130 @@ const VideoChat = () => {
       }
 
       setRoomId(roomId);
+      // Also store roomId in socket for backup
+      socket.roomId = roomId;
       setIsHost(isHost);
       setParticipants(users.filter(user => user && user.id));
       setConnectionStatus('connected');
       setIsJoined(true);
       clearChat();
 
-      // Initialize connections with existing users
+      // Initialize connections with existing users immediately
       users.forEach(user => {
         if (user && user.id && user.id !== socket.id) {
           console.log('Initializing connection with existing user:', user.id);
           if (!peerConnectionsRef.current[user.id]) {
-            initiateCall(user.id);
+            // Don't delay the call initiation
+            setTimeout(() => {
+              console.log('Calling initiateCall for user:', user.id, 'with roomId:', roomId);
+              initiateCall(user.id);
+            }, 500); // Reduced delay to ensure roomId is set
           }
         }
       });
-    })[createPeerConnection, getUserMedia, setRemoteStreams, setRemoteVideoStates, setParticipants, setIsJoined, clearChat];
+    });
+
     const pendingCandidates = {}; // userId -> array of ICE candidates
 
     // ---- OFFER handler ----
     socket.on('offer', async ({ from, offer }) => {
       try {
-        const peerConnection = createPeerConnection(from);
-
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-
-        // Apply any stored ICE candidates
-        if (pendingCandidates[from] && pendingCandidates[from].length > 0) {
-          for (const cand of pendingCandidates[from]) {
-            await peerConnection.addIceCandidate(new RTCIceCandidate(cand));
-          }
-          delete pendingCandidates[from];
+        console.log('Received offer from:', from);
+        
+        if (!from || !offer) {
+          console.error('Invalid offer data received:', { from, offer });
+          return;
         }
 
-        // Add local media tracks
+        const peerConnection = createPeerConnection(from);
 
+        // Set remote description first
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+        console.log('Remote description set for:', from);
 
+        // Apply any stored ICE candidates after remote description is set
+        await applyBufferedCandidates(from, peerConnection, pendingCandidates);
+
+        // Create and send answer
         const answer = await peerConnection.createAnswer();
         await peerConnection.setLocalDescription(answer);
 
-        console.log('✅ Sending answer to:', from);
-        socket.emit('answer', { to: from, answer });
+        console.log('Sending answer to:', from);
+        socket.emit('answer', { to: from, answer, roomId: roomId || socket?.roomId });
 
       } catch (error) {
-        console.error('❌ Error handling offer:', error);
+        console.error('Error handling offer:', error);
       }
     });
 
 
     // ---- ANSWER handler ----
-    // Do NOT add tracks again! Host already added them before sending the offer.
     socket.on('answer', async ({ from, answer }) => {
+      console.log('Received answer from:', from);
+      
+      if (!from || !answer) {
+        console.error('Invalid answer data received:', { from, answer });
+        return;
+      }
+
       const peerConnection = peerConnectionsRef.current[from];
       if (peerConnection) {
         try {
           await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-          console.log('✅ Answer received from:', from);
+          console.log('Remote description set from answer for:', from);
+
+          // Apply any stored ICE candidates after remote description is set
+          await applyBufferedCandidates(from, peerConnection, pendingCandidates);
         } catch (err) {
-          console.error('❌ Failed to set remote description:', err);
+          console.error('Failed to set remote description:', err);
         }
+      } else {
+        console.warn('No peer connection found for answer from:', from);
+        console.log('Available peer connections:', Object.keys(peerConnectionsRef.current));
       }
     });
 
 
     // ---- ICE Candidate handler ----
     socket.on('candidate', async ({ from, candidate }) => {
+      console.log('Received ICE candidate from:', from);
+      
+      if (!from || !candidate) {
+        console.error('Invalid candidate data received:', { from, candidate });
+        return;
+      }
+
       const peerConnection = peerConnectionsRef.current[from];
       if (peerConnection) {
-        try {
-          await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (err) {
-          console.error('❌ Error adding ICE candidate:', err);
+        // Check if remote description is set before adding ICE candidate
+        if (peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
+          try {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            console.log('Successfully added ICE candidate from:', from);
+          } catch (err) {
+            console.error('Error adding ICE candidate:', err);
+          }
+        } else {
+          // Buffer the candidate until remote description is set
+          if (!pendingCandidates[from]) {
+            pendingCandidates[from] = [];
+          }
+          pendingCandidates[from].push(candidate);
+          console.log('Buffered ICE candidate from:', from, '- waiting for remote description');
+          console.log('Peer connection state:', {
+            signalingState: peerConnection.signalingState,
+            connectionState: peerConnection.connectionState,
+            iceConnectionState: peerConnection.iceConnectionState
+          });
         }
       } else {
         // If peer connection is not yet ready, store the candidate
-        pendingCandidates[from] = pendingCandidates[from] || [];
+        if (!pendingCandidates[from]) {
+          pendingCandidates[from] = [];
+        }
         pendingCandidates[from].push(candidate);
+        console.log('Buffered ICE candidate from:', from, '- no peer connection yet');
+        console.log('Available peer connections:', Object.keys(peerConnectionsRef.current));
       }
     });
 
@@ -617,12 +696,11 @@ const VideoChat = () => {
         [user.id]: false
       }));
 
-      // Host initiates the call
+      // Host initiates the call immediately
       if (isHost) {
-        console.log('📞 Host initiating call with new user:', user.id);
-        setTimeout(() => {
-          initiateCall(user.id);
-        }, 1500);
+        console.log('Host initiating call with new user:', user.id);
+        // Don't delay the call initiation
+        initiateCall(user.id);
       }
     });
 
@@ -642,7 +720,7 @@ const VideoChat = () => {
       socket.off('videoStateChanged');
       socket.off('userJoined');
     };
-  }, [isHost, initiateCall]);
+  }, [isHost, initiateCall, applyBufferedCandidates]);
 
   // Clean up when I leave or someone else leaves
   const handleUserDisconnected = (userId) => {
@@ -820,42 +898,32 @@ const VideoChat = () => {
   // Add connection state logging
   useEffect(() => {
     const logConnectionState = () => {
+      console.log('=== Peer Connection Status ===');
       Object.entries(peerConnectionsRef.current).forEach(([userId, pc]) => {
-        console.log(`Connection state with ${userId}:`, {
+        console.log(`User ${userId}:`, {
           connectionState: pc.connectionState,
           iceConnectionState: pc.iceConnectionState,
-          signalingState: pc.signalingState
+          signalingState: pc.signalingState,
+          hasRemoteDescription: !!pc.remoteDescription,
+          hasLocalDescription: !!pc.localDescription
         });
       });
+      console.log('=== End Status ===');
     };
 
+    // Check more frequently for debugging
     const interval = setInterval(logConnectionState, 5000);
     return () => clearInterval(interval);
   }, []);
 
   // Add this useEffect to monitor video element and stream
   useEffect(() => {
-    if (localVideoRef.current) {
-      console.log('Local video element:', {
-        srcObject: localVideoRef.current.srcObject,
-        readyState: localVideoRef.current.readyState,
-        videoWidth: localVideoRef.current.videoWidth,
-        videoHeight: localVideoRef.current.videoHeight,
-        paused: localVideoRef.current.paused
-      });
+    // Only log if there are issues
+    if (localVideoRef.current && !localVideoRef.current.srcObject && localStreamRef.current) {
+      console.log('Setting local stream to video element from monitoring');
+      localVideoRef.current.srcObject = localStreamRef.current;
     }
-
-    if (localStreamRef.current) {
-      console.log('Local stream:', {
-        active: localStreamRef.current.active,
-        tracks: localStreamRef.current.getTracks().map(track => ({
-          kind: track.kind,
-          enabled: track.enabled,
-          muted: track.muted
-        }))
-      });
-    }
-  }, [localVideoRef.current?.srcObject]);
+  }, [localStreamRef.current]);
 
   // Add this useEffect to monitor video track status
   useEffect(() => {
@@ -863,13 +931,21 @@ const VideoChat = () => {
       if (localStreamRef.current) {
         const videoTrack = localStreamRef.current.getVideoTracks()[0];
         if (videoTrack) {
-          console.log('Video track status:', {
-            enabled: videoTrack.enabled,
-            muted: videoTrack.muted,
-            readyState: videoTrack.readyState,
-            constraints: videoTrack.getConstraints(),
-            settings: videoTrack.getSettings()
-          });
+          // Only log if there's an issue and the track is not intentionally ended
+          if (!videoTrack.enabled || (videoTrack.readyState !== 'live' && videoTrack.readyState !== 'ended')) {
+            console.warn('Video track issue:', {
+              enabled: videoTrack.enabled,
+              readyState: videoTrack.readyState
+            });
+          }
+          
+          // If track has ended, try to get a new stream
+          if (videoTrack.readyState === 'ended' && localStreamRef.current) {
+            console.log('Video track ended, attempting to get new stream');
+            getUserMedia().catch(err => {
+              console.error('Failed to get new stream after track ended:', err);
+            });
+          }
         } else {
           console.error('No video track found');
         }
@@ -877,9 +953,10 @@ const VideoChat = () => {
     };
 
     checkVideoTrack();
-    const interval = setInterval(checkVideoTrack, 2000);
+    // Check less frequently to reduce console spam
+    const interval = setInterval(checkVideoTrack, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [getUserMedia]);
 
   // Add a retry button to the error container
 
@@ -967,27 +1044,16 @@ const VideoChat = () => {
   const renderRemoteVideos = () => {
     console.log('Rendering remote streams:', remoteStreams);
 
-    const userId = localUserId || socket?.id; // Ensure userId is defined
     return remoteStreams.map((streamInfo) => {
       if (!streamInfo || !streamInfo.userId || !streamInfo.stream) return null;
 
-      const effectiveUserId = localUserId || socket?.id;
-      if (userId === effectiveUserId) return; // ⛔ prevent adding self
-
+      // Don't render self as remote video
+      if (streamInfo.userId === (localUserId || socket?.id)) return null;
 
       const participant = participants.find(p => p?.id === streamInfo.userId);
       const username = participant?.username || 'Participant';
 
       console.log("Rendering video for:", username);
-      console.log("RemoteStreams:", remoteStreams);
-      console.log("Socket ID:", socket?.id);
-      console.log("LocalUserId:", localUserId);
-      console.log("Participants:", participants);
-      console.log("StreamInfo:", streamInfo);
-      const videos = document.querySelectorAll("video");
-      videos.forEach(v => console.log(v.srcObject, v.paused));
-
-
 
       return (
         <div key={streamInfo.userId} className="video-container">
@@ -998,33 +1064,48 @@ const VideoChat = () => {
             </div>
           ) : (
             <video
-              key={`video-${streamInfo.userId}`}
+              key={`video-${streamInfo.userId}-${Date.now()}`}
+              data-user-id={streamInfo.userId}
               autoPlay
               playsInline
               muted={false}
               ref={(el) => {
                 if (el && streamInfo.stream) {
-                  el.srcObject = streamInfo.stream;
-                  el.onloadedmetadata = () => {
-                    console.log(`Video metadata loaded for ${streamInfo.userId}`);
-                    el.play().catch(err => {
-                      console.warn("Playback error:", err);
-                      setVideoError(true);
-                    });
-                  };
-                  setTimeout(() => {
-                    if (document.body.contains(el)) {
-                      el.play().catch(err => {
-                        console.warn("Manual play failed on interaction:", err);
-                      });
-                    }
-                  }, 50); // wait for DOM reflow if needed
+                  // Only set srcObject if it's different to avoid unnecessary reloads
+                  if (el.srcObject !== streamInfo.stream) {
+                    el.srcObject = streamInfo.stream;
+                    console.log(`Video ${streamInfo.userId} loaded`);
+                  }
+
+                  // Only set up event handlers if they haven't been set
+                  if (!el._handlersSet) {
+                    el.onloadedmetadata = () => {
+                      console.log(`Video metadata loaded for ${streamInfo.userId}`);
+                      if (el.srcObject && !el.paused) {
+                        el.play().catch(err => {
+                          if (err.name !== 'AbortError') {
+                            console.warn("Playback error:", err);
+                          }
+                        });
+                      }
+                    };
+
+                    el.oncanplay = () => {
+                      if (el.srcObject && el.paused) {
+                        el.play().catch(err => {
+                          if (err.name !== 'AbortError') {
+                            console.warn("Canplay play failed:", err);
+                          }
+                        });
+                      }
+                    };
+
+                    el._handlersSet = true;
+                  }
                 }
               }}
-
               className="video-item"
-              style={{ transform: 'scaleX(-1)', border: '2px solid red', width: '320px', height: '240px' }}
-
+              style={{ transform: 'scaleX(-1)' }}
             />
           )}
           <div className="participant-name">{username}</div>
@@ -1038,27 +1119,21 @@ const VideoChat = () => {
   useEffect(() => {
     const checkSocketConnection = () => {
       if (!socket || !socket.connected) {
-        console.error('Socket disconnected');
-        setError('Connection lost. Please refresh the page.');
+        console.warn('Socket disconnected, attempting to reconnect...');
         setConnectionStatus('disconnected');
-        socket.on('all-users', (users) => {
-          const filtered = users.filter(user => user.id !== socket.id);
-          setParticipants(filtered);
-        });
+        // Don't set error immediately, let socket.io handle reconnection
+      } else {
+        setConnectionStatus('connected');
+        setError(null); // Clear any connection errors
       }
     };
 
-    const interval = setInterval(checkSocketConnection, 5000);
+    // Check less frequently to reduce console spam
+    const interval = setInterval(checkSocketConnection, 10000);
     return () => clearInterval(interval);
-  }, []);
-  useEffect(() => {
-    if (localStreamRef.current && localVideoRef.current) {
-      localVideoRef.current.srcObject = localStreamRef.current;
-    }
-  }, [localStream]);
-  useEffect(() => {
-    console.log("Remote streams updated:", remoteStreams);
-  }, [remoteStreams]);
+  }, [socket]);
+  // Remove redundant local stream ref setting
+  // Remove redundant logging of remote streams
 
 
   // Add cleanup for streams when component unmounts
@@ -1080,10 +1155,12 @@ const VideoChat = () => {
   useEffect(() => {
     const handleInteraction = () => {
       document.querySelectorAll('video').forEach(video => {
-        if (video.paused) {
-          video.play().catch(err =>
-            console.warn('Manual play failed on interaction:', err)
-          );
+        if (video.paused && video.srcObject) {
+          video.play().catch(err => {
+            if (err.name !== 'AbortError') {
+              console.warn('Manual play failed on interaction:', err);
+            }
+          });
         }
       });
     };
@@ -1103,9 +1180,11 @@ const VideoChat = () => {
     const handleUserInteraction = () => {
       const videos = document.querySelectorAll('video');
       videos.forEach(video => {
-        if (video.paused) {
+        if (video.paused && video.srcObject) {
           video.play().catch(err => {
-            console.warn('Play after user interaction failed:', err);
+            if (err.name !== 'AbortError') {
+              console.warn('Play after user interaction failed:', err);
+            }
           });
         }
       });
@@ -1115,9 +1194,24 @@ const VideoChat = () => {
     document.addEventListener('click', handleUserInteraction);
     document.addEventListener('touchstart', handleUserInteraction);
 
+    // Also try to play videos periodically
+    const playInterval = setInterval(() => {
+      const videos = document.querySelectorAll('video');
+      videos.forEach(video => {
+        if (video.paused && video.srcObject && video.readyState >= 2) {
+          video.play().catch(err => {
+            if (err.name !== 'AbortError') {
+              console.warn('Periodic play attempt failed:', err);
+            }
+          });
+        }
+      });
+    }, 2000);
+
     return () => {
       document.removeEventListener('click', handleUserInteraction);
       document.removeEventListener('touchstart', handleUserInteraction);
+      clearInterval(playInterval);
     };
   }, []);
 
@@ -1137,6 +1231,16 @@ const VideoChat = () => {
       // Close the connection
       peerConnection.close();
       delete peerConnectionsRef.current[userId];
+
+      // Clean up video elements for this user
+      const videoElements = document.querySelectorAll(`video[data-user-id="${userId}"]`);
+      videoElements.forEach(video => {
+        if (video.srcObject) {
+          video.srcObject.getTracks().forEach(track => track.stop());
+          video.srcObject = null;
+        }
+        delete video._handlersSet;
+      });
 
       // Remove from remote streams
       setRemoteStreams(prev => prev.filter(s => s.userId !== userId));
@@ -1189,14 +1293,27 @@ const VideoChat = () => {
         className="video-item local"
         style={{ transform: 'scaleX(-1)', objectFit: 'cover' }}
         onLoadedMetadata={(e) => {
-          console.log('Video metadata loaded');
-          e.target.play().catch(err => {
-            console.error('Play failed:', err);
-            setVideoError(true);
-          });
+          console.log('Local video metadata loaded');
+          if (e.target.srcObject && !e.target.paused) {
+            e.target.play().catch(err => {
+              if (err.name !== 'AbortError') {
+                console.error('Local video play failed:', err);
+              }
+            });
+          }
+        }}
+        onCanPlay={(e) => {
+          console.log('Local video can play');
+          if (e.target.srcObject && e.target.paused) {
+            e.target.play().catch(err => {
+              if (err.name !== 'AbortError') {
+                console.error('Local video play failed on canplay:', err);
+              }
+            });
+          }
         }}
         onError={(e) => {
-          console.error('Video error:', e);
+          console.error('Local video error:', e);
           setVideoError(true);
         }}
       />
@@ -1225,8 +1342,10 @@ const VideoChat = () => {
               <span className="material-symbols-outlined">videocam_off</span>
               <p>Camera turned off</p>
             </div>
-          ) : (renderLocalVideo()
-
+          ) : (
+            <div className="video-container local">
+              {renderLocalVideo()}
+            </div>
           )}
 
           {/* Remote Videos */}
