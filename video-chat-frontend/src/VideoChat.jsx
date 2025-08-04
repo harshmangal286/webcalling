@@ -45,6 +45,9 @@ const VideoChat = () => {
   // First, add a new state to track remote video states
   const [remoteVideoStates, setRemoteVideoStates] = useState({});
 
+  // Add this state to track ongoing call attempts
+  const [ongoingCallAttempts, setOngoingCallAttempts] = useState(new Set());
+
   // Function to get my camera and mic
   // This function should ONLY return the stream or throw error
   const getUserMediaWithCheck = async () => {
@@ -266,6 +269,14 @@ const VideoChat = () => {
           console.log(`Adding new stream for ${userId}`);
           const updated = [...prevStreams, { userId, stream: newStream, videoOff: false }];
           console.log(`New streams count: ${updated.length}`);
+          
+          // Clear ongoing call attempt since we successfully received a stream
+          setOngoingCallAttempts(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(userId);
+            return newSet;
+          });
+          
           return updated;
         });
 
@@ -478,11 +489,20 @@ const VideoChat = () => {
     try {
       console.log('Initiating call with:', userId);
 
+      // Check if we're already attempting to call this user
+      if (ongoingCallAttempts.has(userId)) {
+        console.log('Call attempt already in progress for:', userId);
+        return;
+      }
+
       // Check if we already have a peer connection for this user
       if (peerConnectionsRef.current[userId]) {
         console.log('Peer connection already exists for:', userId);
         return;
       }
+
+      // Mark this call attempt as ongoing
+      setOngoingCallAttempts(prev => new Set(prev).add(userId));
 
       // Get roomId from state or socket
       const currentRoomId = roomId || socket?.roomId;
@@ -490,6 +510,11 @@ const VideoChat = () => {
         console.error('No roomId available for call initiation');
         console.log('Current roomId state:', roomId);
         console.log('Socket roomId:', socket?.roomId);
+        setOngoingCallAttempts(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(userId);
+          return newSet;
+        });
         return;
       }
 
@@ -517,6 +542,15 @@ const VideoChat = () => {
         roomId: currentRoomId
       });
 
+      // Remove from ongoing attempts after a delay
+      setTimeout(() => {
+        setOngoingCallAttempts(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(userId);
+          return newSet;
+        });
+      }, 5000); // 5 second timeout
+
     } catch (error) {
       console.error('Failed to initiate call:', error);
       // Handle connection failure inline
@@ -530,8 +564,15 @@ const VideoChat = () => {
 
       // Remove failed streams
       setRemoteStreams(prev => prev.filter(s => s.userId !== userId));
+
+      // Remove from ongoing attempts
+      setOngoingCallAttempts(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(userId);
+        return newSet;
+      });
     }
-  }, [roomId, socket, getUserMedia, createPeerConnection]);
+  }, [roomId, socket, getUserMedia, createPeerConnection, ongoingCallAttempts]);
 
   // Add function to reset peer connection (moved before useEffect that uses it)
   const resetPeerConnection = useCallback((userId) => {
@@ -673,6 +714,11 @@ const VideoChat = () => {
 
           console.log('Sending answer to:', from);
           socket.emit('answer', { to: from, answer, roomId: roomId || socket?.roomId });
+        } else if (peerConnection.signalingState === 'have-local-offer') {
+          // We already have a local offer, this means we're in a race condition
+          // We should ignore this offer and wait for the answer to our own offer
+          console.log('Ignoring offer from', from, '- already have local offer');
+          console.log('Waiting for answer to our own offer');
         } else {
           console.warn('Cannot set remote offer - wrong signaling state:', peerConnection.signalingState);
           console.log('Peer connection state:', {
@@ -715,25 +761,28 @@ const VideoChat = () => {
 
             // Apply any stored ICE candidates after remote description is set
             await applyBufferedCandidates(from, peerConnection, pendingCandidates);
-                  } else {
-          console.warn('Cannot set remote answer - wrong signaling state:', peerConnection.signalingState);
-          console.log('Peer connection state:', {
-            signalingState: peerConnection.signalingState,
-            connectionState: peerConnection.connectionState,
-            iceConnectionState: peerConnection.iceConnectionState
-          });
-          
-          // Reset the connection if it's in a bad state
-          if (peerConnection.signalingState !== 'have-local-offer') {
-            console.log('Resetting peer connection due to bad signaling state for answer');
-            resetPeerConnection(from);
+          } else if (peerConnection.signalingState === 'stable') {
+            // We're already connected, this might be a duplicate answer
+            console.log('Ignoring answer from', from, '- already in stable state');
+          } else {
+            console.warn('Cannot set remote answer - wrong signaling state:', peerConnection.signalingState);
+            console.log('Peer connection state:', {
+              signalingState: peerConnection.signalingState,
+              connectionState: peerConnection.connectionState,
+              iceConnectionState: peerConnection.iceConnectionState
+            });
+            
+            // Reset the connection if it's in a bad state
+            if (peerConnection.signalingState !== 'have-local-offer' && peerConnection.signalingState !== 'stable') {
+              console.log('Resetting peer connection due to bad signaling state for answer');
+              resetPeerConnection(from);
+            }
           }
+        } catch (err) {
+          console.error('Failed to set remote description:', err);
+          // Reset connection on error
+          resetPeerConnection(from);
         }
-      } catch (err) {
-        console.error('Failed to set remote description:', err);
-        // Reset connection on error
-        resetPeerConnection(from);
-      }
       } else {
         console.warn('No peer connection found for answer from:', from);
         console.log('Available peer connections:', Object.keys(peerConnectionsRef.current));
@@ -901,16 +950,6 @@ const VideoChat = () => {
         ...prev,
         [user.id]: false
       }));
-
-      // Add placeholder stream entry for new user
-      setRemoteStreams(prev => {
-        const exists = prev.find(s => s.userId === user.id);
-        if (!exists) {
-          console.log(`Adding placeholder stream for new user ${user.id}`);
-          return [...prev, { userId: user.id, stream: null, videoOff: false }];
-        }
-        return prev;
-      });
 
       // All existing users (including host) initiate calls with the new user
       console.log('Initiating call with new user:', user.id);
@@ -1411,25 +1450,24 @@ const VideoChat = () => {
     console.log('Rendering remote streams:', remoteStreams);
 
     return remoteStreams.map((streamInfo) => {
-      if (!streamInfo || !streamInfo.userId) return null;
+      if (!streamInfo || !streamInfo.userId || !streamInfo.stream) return null;
 
       // Don't render self as remote video
       if (streamInfo.userId === (localUserId || socket?.id)) return null;
 
       const participant = participants.find(p => p?.id === streamInfo.userId);
       const username = participant?.username || 'Participant';
-      const isVideoOff = remoteVideoStates[streamInfo.userId] || streamInfo.videoOff;
 
-      console.log("Rendering video for:", username, "video off:", isVideoOff);
+      console.log("Rendering video for:", username);
 
       return (
         <div key={streamInfo.userId} className="video-container">
-          {isVideoOff ? (
+          {remoteVideoStates[streamInfo.userId] ? (
             <div className="video-error">
               <span className="material-symbols-outlined">videocam_off</span>
               <p>Camera turned off</p>
             </div>
-          ) : streamInfo.stream ? (
+          ) : (
                          <video
                key={`video-${streamInfo.userId}-${Date.now()}`}
                data-user-id={streamInfo.userId}
@@ -1520,7 +1558,7 @@ const VideoChat = () => {
                className="video-item"
                style={{ transform: 'scaleX(-1)' }}
              />
-          ) : null}
+          )}
           <div className="participant-name">{username}</div>
         </div>
       );
@@ -1981,31 +2019,6 @@ const VideoChat = () => {
              style={{ backgroundColor: '#ff6b6b', color: 'white' }}
            >
              Debug
-           </button>
-           
-           <button
-             onClick={() => {
-               console.log('=== REMOTE STREAMS DEBUG ===');
-               console.log('Remote streams:', remoteStreams);
-               console.log('Remote video states:', remoteVideoStates);
-               console.log('Participants:', participants);
-               
-               remoteStreams.forEach((streamInfo, index) => {
-                 console.log(`Stream ${index}:`, {
-                   userId: streamInfo.userId,
-                   hasStream: !!streamInfo.stream,
-                   videoOff: streamInfo.videoOff,
-                   videoState: remoteVideoStates[streamInfo.userId],
-                   participant: participants.find(p => p.id === streamInfo.userId)
-                 });
-               });
-               
-               console.log('=== END REMOTE STREAMS DEBUG ===');
-             }}
-             className="debug-button"
-             style={{ backgroundColor: '#4ecdc4', color: 'white', marginLeft: '10px' }}
-           >
-             Debug Streams
            </button>
         </div>
       </div>
