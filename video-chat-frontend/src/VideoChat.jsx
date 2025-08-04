@@ -461,6 +461,12 @@ const VideoChat = () => {
     try {
       console.log('Initiating call with:', userId);
 
+      // Check if we already have a peer connection for this user
+      if (peerConnectionsRef.current[userId]) {
+        console.log('Peer connection already exists for:', userId);
+        return;
+      }
+
       // Get roomId from state or socket
       const currentRoomId = roomId || socket?.roomId;
       if (!currentRoomId) {
@@ -601,15 +607,15 @@ const VideoChat = () => {
       clearChat();
 
       // Initialize connections with existing users immediately
-      users.forEach(user => {
+      users.forEach((user, index) => {
         if (user && user.id && user.id !== socket.id) {
           console.log('Initializing connection with existing user:', user.id);
           if (!peerConnectionsRef.current[user.id]) {
-            // Don't delay the call initiation
+            // Stagger the call initiation to avoid overwhelming the system
             setTimeout(() => {
               console.log('Calling initiateCall for user:', user.id, 'with roomId:', roomId);
               initiateCall(user.id);
-            }, 500); // Reduced delay to ensure roomId is set
+            }, 500 + (index * 200)); // Stagger by 200ms per user
           }
         }
       });
@@ -835,12 +841,12 @@ const VideoChat = () => {
         [user.id]: false
       }));
 
-      // Host initiates the call immediately
-      if (isHost) {
-        console.log('Host initiating call with new user:', user.id);
-        // Don't delay the call initiation
+      // All existing users (including host) initiate calls with the new user
+      console.log('Initiating call with new user:', user.id);
+      // Small delay to ensure everything is set up
+      setTimeout(() => {
         initiateCall(user.id);
-      }
+      }, 500);
     });
 
 
@@ -889,25 +895,54 @@ const VideoChat = () => {
   // My controls for video/audio
   const toggleAudio = () => {
     if (localStreamRef.current) {
-      localStreamRef.current.getAudioTracks().forEach(track => {
+      const audioTracks = localStreamRef.current.getAudioTracks();
+      audioTracks.forEach(track => {
         track.enabled = !track.enabled;
       });
-      setIsAudioMuted(!isAudioMuted);
+      // Fix the reversed logic - when track is enabled, we're not muted
+      const isTrackEnabled = audioTracks[0]?.enabled;
+      setIsAudioMuted(!isTrackEnabled);
+      console.log('Audio toggled:', { trackEnabled: isTrackEnabled, isMuted: !isTrackEnabled });
     }
   };
 
   const toggleVideo = () => {
     if (localStreamRef.current) {
-      localStreamRef.current.getVideoTracks().forEach(track => {
-        track.enabled = !track.enabled;
+      const videoTracks = localStreamRef.current.getVideoTracks();
+      
+      // Check current state
+      const currentTrackEnabled = videoTracks[0]?.enabled;
+      const newTrackEnabled = !currentTrackEnabled;
+      
+      console.log('Toggling video:', { current: currentTrackEnabled, new: newTrackEnabled });
+      
+      // Set track state
+      videoTracks.forEach(track => {
+        track.enabled = newTrackEnabled;
       });
-      setIsVideoOff(!isVideoOff);
+      
+      // Update state
+      setIsVideoOff(!newTrackEnabled);
+      
+      console.log('Video toggled:', { trackEnabled: newTrackEnabled, isVideoOff: !newTrackEnabled });
 
       // Let others know I turned my camera off/on
       socket.emit('videoStateChange', {
         roomId,
-        isVideoOff: !isVideoOff
+        isVideoOff: !newTrackEnabled
       });
+      
+      // Force re-enable if turning on and track is still disabled
+      if (newTrackEnabled) {
+        setTimeout(() => {
+          const track = videoTracks[0];
+          if (track && !track.enabled && track.readyState === 'live') {
+            console.log('Force re-enabling video track');
+            track.enabled = true;
+            setIsVideoOff(false);
+          }
+        }, 100);
+      }
     }
   };
 
@@ -1095,6 +1130,13 @@ const VideoChat = () => {
             }
           }
           
+          // Synchronize video state with track state
+          const isTrackEnabled = videoTrack.enabled;
+          if (isVideoOff !== !isTrackEnabled) {
+            console.log('Synchronizing video state:', { isTrackEnabled, isVideoOff: !isTrackEnabled });
+            setIsVideoOff(!isTrackEnabled);
+          }
+          
           // If track has ended, try to get a new stream
           if (videoTrack.readyState === 'ended' && localStreamRef.current) {
             console.log('Video track ended, attempting to get new stream');
@@ -1112,7 +1154,7 @@ const VideoChat = () => {
     // Check less frequently to reduce console spam
     const interval = setInterval(checkVideoTrack, 5000);
     return () => clearInterval(interval);
-  }, [getUserMedia]);
+  }, [getUserMedia, isVideoOff]);
 
   // Add a retry button to the error container
 
@@ -1227,38 +1269,50 @@ const VideoChat = () => {
                muted={false}
                ref={(el) => {
                  if (el && streamInfo.stream) {
-                   // Only set srcObject if it's different to avoid unnecessary reloads
-                   if (el.srcObject !== streamInfo.stream) {
-                     el.srcObject = streamInfo.stream;
-                     console.log(`Video ${streamInfo.userId} loaded`);
-                     
-                     // Check if stream has tracks
-                     const tracks = streamInfo.stream.getTracks();
-                     console.log(`Stream tracks for ${streamInfo.userId}:`, tracks.map(t => ({ kind: t.kind, enabled: t.enabled, readyState: t.readyState })));
-                   }
+                   // Always set srcObject to ensure it's current
+                   el.srcObject = streamInfo.stream;
+                   console.log(`Video ${streamInfo.userId} loaded`);
+                   
+                   // Check if stream has tracks
+                   const tracks = streamInfo.stream.getTracks();
+                   console.log(`Stream tracks for ${streamInfo.userId}:`, tracks.map(t => ({ kind: t.kind, enabled: t.enabled, readyState: t.readyState })));
+                   
+                   // Force enable video tracks
+                   tracks.forEach(track => {
+                     if (track.kind === 'video' && !track.enabled && track.readyState === 'live') {
+                       console.log(`Force enabling video track for ${streamInfo.userId}`);
+                       track.enabled = true;
+                     }
+                   });
 
                    // Only set up event handlers if they haven't been set
                    if (!el._handlersSet) {
                      el.onloadedmetadata = () => {
                        console.log(`Video metadata loaded for ${streamInfo.userId}`);
-                       if (el.srcObject && el.paused) {
-                         el.play().catch(err => {
-                           if (err.name !== 'AbortError') {
-                             console.warn("Playback error:", err);
-                           }
-                         });
-                       }
+                       // Force play after metadata is loaded
+                       setTimeout(() => {
+                         if (el.srcObject && el.paused) {
+                           el.play().catch(err => {
+                             if (err.name !== 'AbortError') {
+                               console.warn("Playback error:", err);
+                             }
+                           });
+                         }
+                       }, 100);
                      };
 
                      el.oncanplay = () => {
                        console.log(`Video can play for ${streamInfo.userId}`);
-                       if (el.srcObject && el.paused) {
-                         el.play().catch(err => {
-                           if (err.name !== 'AbortError') {
-                             console.warn("Canplay play failed:", err);
-                           }
-                         });
-                       }
+                       // Force play when ready
+                       setTimeout(() => {
+                         if (el.srcObject && el.paused) {
+                           el.play().catch(err => {
+                             if (err.name !== 'AbortError') {
+                               console.warn("Canplay play failed:", err);
+                             }
+                           });
+                         }
+                       }, 100);
                      };
 
                      el.onplay = () => {
@@ -1269,7 +1323,28 @@ const VideoChat = () => {
                        console.error(`Video error for ${streamInfo.userId}:`, e);
                      };
 
+                     el.onstalled = () => {
+                       console.warn(`Video stalled for ${streamInfo.userId}`);
+                     };
+
+                     el.onwaiting = () => {
+                       console.warn(`Video waiting for ${streamInfo.userId}`);
+                     };
+
                      el._handlersSet = true;
+                   }
+                   
+                   // Force play immediately if ready
+                   if (el.readyState >= 2) {
+                     setTimeout(() => {
+                       if (el.paused) {
+                         el.play().catch(err => {
+                           if (err.name !== 'AbortError') {
+                             console.warn("Immediate play failed:", err);
+                           }
+                         });
+                       }
+                     }, 100);
                    }
                  }
                }}
@@ -1371,6 +1446,18 @@ const VideoChat = () => {
           video.play().catch(err => {
             if (err.name !== 'AbortError') {
               console.warn('Periodic play attempt failed:', err);
+            }
+          });
+        }
+        
+        // Force enable video tracks for remote videos
+        if (video.srcObject && video.dataset.userId) {
+          const stream = video.srcObject;
+          const tracks = stream.getTracks();
+          tracks.forEach(track => {
+            if (track.kind === 'video' && !track.enabled && track.readyState === 'live') {
+              console.log(`Force enabling video track for ${video.dataset.userId}`);
+              track.enabled = true;
             }
           });
         }
