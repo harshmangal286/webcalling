@@ -427,6 +427,21 @@ const VideoChat = () => {
       setRemoteStreams(prev => prev.filter(s => s.userId !== userId));
     }
   }, [roomId, socket, getUserMedia, createPeerConnection]);
+
+  // Add function to reset peer connection (moved before useEffect that uses it)
+  const resetPeerConnection = useCallback((userId) => {
+    console.log('Resetting peer connection for:', userId);
+    cleanupPeerConnection(userId);
+    
+    // Try to re-establish connection if we're the host
+    if (isHost) {
+      setTimeout(() => {
+        console.log('Attempting to re-establish connection with:', userId);
+        initiateCall(userId);
+      }, 1000);
+    }
+  }, [isHost, initiateCall]);
+
   useEffect(() => {
     const videos = document.querySelectorAll('video');
     videos.forEach(video => {
@@ -1296,24 +1311,7 @@ const VideoChat = () => {
     }
   };
 
-  // Add function to reset peer connection
-  const resetPeerConnection = (userId) => {
-    console.log('Resetting peer connection for:', userId);
-    cleanupPeerConnection(userId);
-    
-    // Clear any pending candidates for this user
-    if (pendingCandidates && pendingCandidates[userId]) {
-      delete pendingCandidates[userId];
-    }
-    
-    // Try to re-establish connection if we're the host
-    if (isHost) {
-      setTimeout(() => {
-        console.log('Attempting to re-establish connection with:', userId);
-        initiateCall(userId);
-      }, 1000);
-    }
-  };
+
 
   // Render functions
   if (error) {
