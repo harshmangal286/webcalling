@@ -1057,12 +1057,23 @@ const VideoChat = () => {
 
   // Add this useEffect to monitor video element and stream
   useEffect(() => {
-    // Only log if there are issues
-    if (localVideoRef.current && !localVideoRef.current.srcObject && localStreamRef.current) {
-      console.log('Setting local stream to video element from monitoring');
-      localVideoRef.current.srcObject = localStreamRef.current;
+    // Ensure local video element always has the stream set
+    if (localVideoRef.current && localStreamRef.current) {
+      if (!localVideoRef.current.srcObject) {
+        console.log('Setting local stream to video element from monitoring');
+        localVideoRef.current.srcObject = localStreamRef.current;
+      }
+      
+      // Force play if paused
+      if (localVideoRef.current.paused) {
+        localVideoRef.current.play().catch(err => {
+          if (err.name !== 'AbortError') {
+            console.warn('Force play local video failed:', err);
+          }
+        });
+      }
     }
-  }, [localStreamRef.current]);
+  }, [localStreamRef.current, isJoined]);
 
   // Add this useEffect to monitor video track status
   useEffect(() => {
