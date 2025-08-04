@@ -622,9 +622,23 @@ const VideoChat = () => {
           console.log('Initializing connection with existing user:', user.id);
           if (!peerConnectionsRef.current[user.id]) {
             // Stagger the call initiation to avoid overwhelming the system
-            setTimeout(() => {
+            setTimeout(async () => {
               console.log('Calling initiateCall for user:', user.id, 'with roomId:', roomId);
-              initiateCall(user.id);
+              try {
+                await initiateCall(user.id);
+                console.log('Successfully initiated call with:', user.id);
+              } catch (error) {
+                console.error('Failed to initiate call with:', user.id, error);
+                // Retry once after a delay
+                setTimeout(async () => {
+                  try {
+                    console.log('Retrying call initiation with:', user.id);
+                    await initiateCall(user.id);
+                  } catch (retryError) {
+                    console.error('Retry failed for call initiation with:', user.id, retryError);
+                  }
+                }, 2000);
+              }
             }, 500 + (index * 200)); // Stagger by 200ms per user
           }
         }
@@ -651,9 +665,9 @@ const VideoChat = () => {
           console.log('Reusing existing peer connection for:', from);
         }
 
-        // Check if we can set the remote description
+        // Handle different signaling states
         if (peerConnection.signalingState === 'stable') {
-          // Set remote description first
+          // Normal case: we can accept the offer
           await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
           console.log('Remote description set for:', from);
 
@@ -666,19 +680,58 @@ const VideoChat = () => {
 
           console.log('Sending answer to:', from);
           socket.emit('answer', { to: from, answer, roomId: roomId || socket?.roomId });
+          
+        } else if (peerConnection.signalingState === 'have-local-offer') {
+          // Offer collision: both peers sent offers simultaneously
+          console.log('Offer collision detected with:', from);
+          
+          // Check if rollback is supported (try-catch is more reliable than feature detection)
+          try {
+            // For simplicity, we'll roll back our offer and accept theirs
+            // First, roll back our local description
+            await peerConnection.setLocalDescription({ type: 'rollback' });
+            
+            // Now we should be in 'stable' state, so we can accept their offer
+            if (peerConnection.signalingState === 'stable') {
+              await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+              console.log('Remote description set after rollback for:', from);
+
+              // Apply any stored ICE candidates
+              await applyBufferedCandidates(from, peerConnection, pendingCandidates);
+
+              // Create and send answer
+              const answer = await peerConnection.createAnswer();
+              await peerConnection.setLocalDescription(answer);
+
+              console.log('Sending answer after rollback to:', from);
+              socket.emit('answer', { to: from, answer, roomId: roomId || socket?.roomId });
+            } else {
+              console.error('Failed to rollback to stable state');
+              resetPeerConnection(from);
+            }
+          } catch (rollbackError) {
+            console.warn('Rollback not supported, resetting connection:', rollbackError);
+            resetPeerConnection(from);
+          }
+          
+        } else if (peerConnection.signalingState === 'have-remote-offer') {
+          // We already have a remote offer, this shouldn't happen normally
+          console.warn('Received offer while already having remote offer from:', from);
+          // We can either ignore this offer or reset the connection
+          // For now, we'll ignore it
+          console.log('Ignoring duplicate offer from:', from);
+          
         } else {
-          console.warn('Cannot set remote offer - wrong signaling state:', peerConnection.signalingState);
+          console.warn('Cannot set remote offer - unexpected signaling state:', peerConnection.signalingState);
           console.log('Peer connection state:', {
             signalingState: peerConnection.signalingState,
             connectionState: peerConnection.connectionState,
             iceConnectionState: peerConnection.iceConnectionState
           });
           
-          // Reset the connection if it's in a bad state
-          if (peerConnection.signalingState !== 'stable' && peerConnection.signalingState !== 'have-local-offer') {
-            console.log('Resetting peer connection due to bad signaling state');
-            resetPeerConnection(from);
-          }
+          // Reset the connection if it's in an unexpected state
+          console.log('Resetting peer connection due to unexpected signaling state');
+          resetPeerConnection(from);
         }
 
       } catch (error) {
@@ -708,25 +761,28 @@ const VideoChat = () => {
 
             // Apply any stored ICE candidates after remote description is set
             await applyBufferedCandidates(from, peerConnection, pendingCandidates);
-                  } else {
-          console.warn('Cannot set remote answer - wrong signaling state:', peerConnection.signalingState);
-          console.log('Peer connection state:', {
-            signalingState: peerConnection.signalingState,
-            connectionState: peerConnection.connectionState,
-            iceConnectionState: peerConnection.iceConnectionState
-          });
-          
-          // Reset the connection if it's in a bad state
-          if (peerConnection.signalingState !== 'have-local-offer') {
-            console.log('Resetting peer connection due to bad signaling state for answer');
-            resetPeerConnection(from);
+          } else if (peerConnection.signalingState === 'stable') {
+            // Connection is already stable, answer might be a duplicate
+            console.log('Connection already stable, ignoring duplicate answer from:', from);
+          } else {
+            console.warn('Cannot set remote answer - wrong signaling state:', peerConnection.signalingState);
+            console.log('Peer connection state:', {
+              signalingState: peerConnection.signalingState,
+              connectionState: peerConnection.connectionState,
+              iceConnectionState: peerConnection.iceConnectionState
+            });
+            
+            // Only reset if it's in an unexpected state (not stable or have-local-offer)
+            if (peerConnection.signalingState !== 'stable' && peerConnection.signalingState !== 'have-local-offer') {
+              console.log('Resetting peer connection due to bad signaling state for answer');
+              resetPeerConnection(from);
+            }
           }
+        } catch (err) {
+          console.error('Failed to set remote description:', err);
+          // Reset connection on error
+          resetPeerConnection(from);
         }
-      } catch (err) {
-        console.error('Failed to set remote description:', err);
-        // Reset connection on error
-        resetPeerConnection(from);
-      }
       } else {
         console.warn('No peer connection found for answer from:', from);
         console.log('Available peer connections:', Object.keys(peerConnectionsRef.current));
@@ -1800,6 +1856,65 @@ const VideoChat = () => {
              <span className="material-symbols-outlined">
                {showParticipants ? 'person_off' : 'people'}
              </span>
+           </button>
+           <button
+             onClick={() => {
+               console.log('=== MANUAL CALL INITIATION ===');
+               // Try to initiate calls with all participants
+               participants.forEach(participant => {
+                 if (participant.id !== socket?.id) {
+                   console.log('Manually initiating call with:', participant.id);
+                   initiateCall(participant.id);
+                 }
+               });
+               console.log('=== END MANUAL CALL INITIATION ===');
+             }}
+             className="debug-button"
+             style={{ backgroundColor: '#28a745', color: 'white' }}
+           >
+             Force Call
+           </button>
+           <button
+             onClick={() => {
+               console.log('=== CONNECTION STATUS DEBUG ===');
+               console.log('Room ID:', roomId);
+               console.log('Is Host:', isHost);
+               console.log('Is Joined:', isJoined);
+               console.log('Participants:', participants);
+               console.log('Local Stream:', localStreamRef.current);
+               console.log('Remote Streams:', remoteStreams);
+               
+               // Check peer connections
+               Object.entries(peerConnectionsRef.current).forEach(([userId, pc]) => {
+                 console.log(`Peer Connection ${userId}:`, {
+                   signalingState: pc.signalingState,
+                   connectionState: pc.connectionState,
+                   iceConnectionState: pc.iceConnectionState,
+                   hasLocalDescription: !!pc.localDescription,
+                   hasRemoteDescription: !!pc.remoteDescription,
+                   localDescriptionType: pc.localDescription?.type,
+                   remoteDescriptionType: pc.remoteDescription?.type
+                 });
+               });
+               
+               // Check video elements
+               const videos = document.querySelectorAll('video');
+               console.log(`Found ${videos.length} video elements`);
+               videos.forEach((video, index) => {
+                 console.log(`Video ${index}:`, {
+                   srcObject: !!video.srcObject,
+                   paused: video.paused,
+                   readyState: video.readyState,
+                   userId: video.dataset.userId || 'local'
+                 });
+               });
+               
+               console.log('=== END CONNECTION STATUS DEBUG ===');
+             }}
+             className="debug-button"
+             style={{ backgroundColor: '#17a2b8', color: 'white' }}
+           >
+             Status
            </button>
            <button
              onClick={() => {
