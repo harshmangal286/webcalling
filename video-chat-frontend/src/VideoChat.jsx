@@ -477,6 +477,17 @@ const VideoChat = () => {
         return;
       }
 
+      // Add a small random delay to reduce offer collision probability
+      const delay = Math.random() * 200; // 0-200ms delay
+      console.log(`Adding ${delay.toFixed(0)}ms delay to reduce collision probability`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+
+      // Double-check that we still don't have a peer connection after the delay
+      if (peerConnectionsRef.current[userId]) {
+        console.log('Peer connection was created during delay, aborting call initiation');
+        return;
+      }
+
       // Get roomId from state or socket
       const currentRoomId = roomId || socket?.roomId;
       if (!currentRoomId) {
@@ -621,25 +632,30 @@ const VideoChat = () => {
         if (user && user.id && user.id !== socket.id) {
           console.log('Initializing connection with existing user:', user.id);
           if (!peerConnectionsRef.current[user.id]) {
-            // Stagger the call initiation to avoid overwhelming the system
-            setTimeout(async () => {
-              console.log('Calling initiateCall for user:', user.id, 'with roomId:', roomId);
-              try {
-                await initiateCall(user.id);
-                console.log('Successfully initiated call with:', user.id);
-              } catch (error) {
-                console.error('Failed to initiate call with:', user.id, error);
-                // Retry once after a delay
-                setTimeout(async () => {
-                  try {
-                    console.log('Retrying call initiation with:', user.id);
-                    await initiateCall(user.id);
-                  } catch (retryError) {
-                    console.error('Retry failed for call initiation with:', user.id, retryError);
-                  }
-                }, 2000);
-              }
-            }, 500 + (index * 200)); // Stagger by 200ms per user
+            // Only the host initiates calls to prevent offer collisions
+            if (isHost) {
+              // Stagger the call initiation to avoid overwhelming the system
+              setTimeout(async () => {
+                console.log('Host calling initiateCall for user:', user.id, 'with roomId:', roomId);
+                try {
+                  await initiateCall(user.id);
+                  console.log('Successfully initiated call with:', user.id);
+                } catch (error) {
+                  console.error('Failed to initiate call with:', user.id, error);
+                  // Retry once after a delay
+                  setTimeout(async () => {
+                    try {
+                      console.log('Retrying call initiation with:', user.id);
+                      await initiateCall(user.id);
+                    } catch (retryError) {
+                      console.error('Retry failed for call initiation with:', user.id, retryError);
+                    }
+                  }, 2000);
+                }
+              }, 500 + (index * 200)); // Stagger by 200ms per user
+            } else {
+              console.log('Not host, waiting for host to initiate call with:', user.id);
+            }
           }
         }
       });
@@ -761,6 +777,9 @@ const VideoChat = () => {
 
             // Apply any stored ICE candidates after remote description is set
             await applyBufferedCandidates(from, peerConnection, pendingCandidates);
+          } else if (peerConnection.signalingState === 'have-remote-offer') {
+            // We sent an offer, so we should ignore this answer (we're waiting for their answer)
+            console.log('Ignoring answer from:', from, '- we sent an offer, waiting for their answer');
           } else if (peerConnection.signalingState === 'stable') {
             // Connection is already stable, answer might be a duplicate
             console.log('Connection already stable, ignoring duplicate answer from:', from);
@@ -772,8 +791,10 @@ const VideoChat = () => {
               iceConnectionState: peerConnection.iceConnectionState
             });
             
-            // Only reset if it's in an unexpected state (not stable or have-local-offer)
-            if (peerConnection.signalingState !== 'stable' && peerConnection.signalingState !== 'have-local-offer') {
+            // Only reset if it's in an unexpected state (not stable, have-local-offer, or have-remote-offer)
+            if (peerConnection.signalingState !== 'stable' && 
+                peerConnection.signalingState !== 'have-local-offer' && 
+                peerConnection.signalingState !== 'have-remote-offer') {
               console.log('Resetting peer connection due to bad signaling state for answer');
               resetPeerConnection(from);
             }
@@ -927,12 +948,16 @@ const VideoChat = () => {
         [user.id]: false
       }));
 
-      // All existing users (including host) initiate calls with the new user
-      console.log('Initiating call with new user:', user.id);
-      // Small delay to ensure everything is set up
-      setTimeout(() => {
-        initiateCall(user.id);
-      }, 500);
+      // Only the host initiates calls with new users to prevent offer collisions
+      if (isHost) {
+        console.log('Host initiating call with new user:', user.id);
+        // Small delay to ensure everything is set up
+        setTimeout(() => {
+          initiateCall(user.id);
+        }, 500);
+      } else {
+        console.log('Not host, waiting for host to initiate call with:', user.id);
+      }
     });
 
 
@@ -1501,6 +1526,37 @@ const VideoChat = () => {
 
                      el.onwaiting = () => {
                        console.warn(`Video waiting for ${streamInfo.userId}`);
+                       // Add detailed debugging for waiting state
+                       console.log(`Video waiting details for ${streamInfo.userId}:`, {
+                         readyState: el.readyState,
+                         networkState: el.networkState,
+                         paused: el.paused,
+                         currentTime: el.currentTime,
+                         duration: el.duration,
+                         hasSrcObject: !!el.srcObject,
+                         streamActive: el.srcObject?.active,
+                         trackCount: el.srcObject?.getTracks().length,
+                         tracks: el.srcObject?.getTracks().map(t => ({
+                           kind: t.kind,
+                           enabled: t.enabled,
+                           readyState: t.readyState,
+                           muted: t.muted
+                         }))
+                       });
+                       
+                       // Check if this is a remote stream and log connection status
+                       if (streamInfo.userId !== socket?.id) {
+                         const pc = peerConnectionsRef.current[streamInfo.userId];
+                         if (pc) {
+                           console.log(`Peer connection status for ${streamInfo.userId}:`, {
+                             connectionState: pc.connectionState,
+                             iceConnectionState: pc.iceConnectionState,
+                             signalingState: pc.signalingState
+                           });
+                         } else {
+                           console.warn(`No peer connection found for ${streamInfo.userId}`);
+                         }
+                       }
                      };
 
                      el._handlersSet = true;
@@ -1534,18 +1590,37 @@ const VideoChat = () => {
   // Add socket connection status check
   useEffect(() => {
     const checkSocketConnection = () => {
-      if (!socket || !socket.connected) {
+      if (!socket) {
+        console.warn('No socket instance available');
+        setConnectionStatus('disconnected');
+        setError('Socket connection not available');
+        return;
+      }
+
+      if (!socket.connected) {
         console.warn('Socket disconnected, attempting to reconnect...');
         setConnectionStatus('disconnected');
-        // Don't set error immediately, let socket.io handle reconnection
+        
+        // Try to reconnect if not already attempting
+        if (!socket.connected && !socket.connecting) {
+          console.log('Manually attempting socket reconnection...');
+          socket.connect();
+        }
+        
+        // Set error message for user feedback
+        setError('Connection lost. Attempting to reconnect...');
       } else {
+        console.log('Socket connection is healthy');
         setConnectionStatus('connected');
         setError(null); // Clear any connection errors
       }
     };
 
+    // Check connection status immediately
+    checkSocketConnection();
+    
     // Check less frequently to reduce console spam
-    const interval = setInterval(checkSocketConnection, 10000);
+    const interval = setInterval(checkSocketConnection, 5000);
     return () => clearInterval(interval);
   }, [socket]);
   // Remove redundant local stream ref setting
@@ -1873,6 +1948,26 @@ const VideoChat = () => {
              style={{ backgroundColor: '#28a745', color: 'white' }}
            >
              Force Call
+           </button>
+           <button
+             onClick={() => {
+               console.log('=== MANUAL SOCKET RECONNECTION ===');
+               if (socket) {
+                 if (socket.connected) {
+                   console.log('Socket is already connected');
+                 } else {
+                   console.log('Attempting manual socket reconnection...');
+                   socket.connect();
+                 }
+               } else {
+                 console.error('No socket instance available');
+               }
+               console.log('=== END SOCKET RECONNECTION ===');
+             }}
+             className="debug-button"
+             style={{ backgroundColor: '#ffc107', color: 'black' }}
+           >
+             Reconnect
            </button>
            <button
              onClick={() => {
