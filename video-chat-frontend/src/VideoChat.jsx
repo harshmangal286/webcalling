@@ -530,24 +530,48 @@ const VideoChat = () => {
           return;
         }
 
-        const peerConnection = createPeerConnection(from);
+        // Check if we already have a peer connection for this user
+        let peerConnection = peerConnectionsRef.current[from];
+        if (!peerConnection) {
+          peerConnection = createPeerConnection(from);
+        } else {
+          console.log('Reusing existing peer connection for:', from);
+        }
 
-        // Set remote description first
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-        console.log('Remote description set for:', from);
+        // Check if we can set the remote description
+        if (peerConnection.signalingState === 'stable') {
+          // Set remote description first
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+          console.log('Remote description set for:', from);
 
-        // Apply any stored ICE candidates after remote description is set
-        await applyBufferedCandidates(from, peerConnection, pendingCandidates);
+          // Apply any stored ICE candidates after remote description is set
+          await applyBufferedCandidates(from, peerConnection, pendingCandidates);
 
-        // Create and send answer
-        const answer = await peerConnection.createAnswer();
-        await peerConnection.setLocalDescription(answer);
+          // Create and send answer
+          const answer = await peerConnection.createAnswer();
+          await peerConnection.setLocalDescription(answer);
 
-        console.log('Sending answer to:', from);
-        socket.emit('answer', { to: from, answer, roomId: roomId || socket?.roomId });
+          console.log('Sending answer to:', from);
+          socket.emit('answer', { to: from, answer, roomId: roomId || socket?.roomId });
+        } else {
+          console.warn('Cannot set remote offer - wrong signaling state:', peerConnection.signalingState);
+          console.log('Peer connection state:', {
+            signalingState: peerConnection.signalingState,
+            connectionState: peerConnection.connectionState,
+            iceConnectionState: peerConnection.iceConnectionState
+          });
+          
+          // Reset the connection if it's in a bad state
+          if (peerConnection.signalingState !== 'stable' && peerConnection.signalingState !== 'have-local-offer') {
+            console.log('Resetting peer connection due to bad signaling state');
+            resetPeerConnection(from);
+          }
+        }
 
       } catch (error) {
         console.error('Error handling offer:', error);
+        // Reset connection on error
+        resetPeerConnection(from);
       }
     });
 
@@ -564,14 +588,32 @@ const VideoChat = () => {
       const peerConnection = peerConnectionsRef.current[from];
       if (peerConnection) {
         try {
-          await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-          console.log('Remote description set from answer for:', from);
+          // Check if we can set the remote description
+          if (peerConnection.signalingState === 'have-local-offer') {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+            console.log('Remote description set from answer for:', from);
 
-          // Apply any stored ICE candidates after remote description is set
-          await applyBufferedCandidates(from, peerConnection, pendingCandidates);
-        } catch (err) {
-          console.error('Failed to set remote description:', err);
+            // Apply any stored ICE candidates after remote description is set
+            await applyBufferedCandidates(from, peerConnection, pendingCandidates);
+                  } else {
+          console.warn('Cannot set remote answer - wrong signaling state:', peerConnection.signalingState);
+          console.log('Peer connection state:', {
+            signalingState: peerConnection.signalingState,
+            connectionState: peerConnection.connectionState,
+            iceConnectionState: peerConnection.iceConnectionState
+          });
+          
+          // Reset the connection if it's in a bad state
+          if (peerConnection.signalingState !== 'have-local-offer') {
+            console.log('Resetting peer connection due to bad signaling state for answer');
+            resetPeerConnection(from);
+          }
         }
+      } catch (err) {
+        console.error('Failed to set remote description:', err);
+        // Reset connection on error
+        resetPeerConnection(from);
+      }
       } else {
         console.warn('No peer connection found for answer from:', from);
         console.log('Available peer connections:', Object.keys(peerConnectionsRef.current));
@@ -720,7 +762,7 @@ const VideoChat = () => {
       socket.off('videoStateChanged');
       socket.off('userJoined');
     };
-  }, [isHost, initiateCall, applyBufferedCandidates]);
+  }, [isHost, initiateCall, applyBufferedCandidates, resetPeerConnection]);
 
   // Clean up when I leave or someone else leaves
   const handleUserDisconnected = (userId) => {
@@ -1251,6 +1293,25 @@ const VideoChat = () => {
         delete newStates[userId];
         return newStates;
       });
+    }
+  };
+
+  // Add function to reset peer connection
+  const resetPeerConnection = (userId) => {
+    console.log('Resetting peer connection for:', userId);
+    cleanupPeerConnection(userId);
+    
+    // Clear any pending candidates for this user
+    if (pendingCandidates && pendingCandidates[userId]) {
+      delete pendingCandidates[userId];
+    }
+    
+    // Try to re-establish connection if we're the host
+    if (isHost) {
+      setTimeout(() => {
+        console.log('Attempting to re-establish connection with:', userId);
+        initiateCall(userId);
+      }, 1000);
     }
   };
 
