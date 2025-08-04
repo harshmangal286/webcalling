@@ -45,9 +45,6 @@ const VideoChat = () => {
   // First, add a new state to track remote video states
   const [remoteVideoStates, setRemoteVideoStates] = useState({});
 
-  // Add this state to track ongoing call attempts
-  const [ongoingCallAttempts, setOngoingCallAttempts] = useState(new Set());
-
   // Function to get my camera and mic
   // This function should ONLY return the stream or throw error
   const getUserMediaWithCheck = async () => {
@@ -214,7 +211,6 @@ const VideoChat = () => {
 
       // Improved track handling
       peerConnection.ontrack = (event) => {
-        console.log("=== ONTRACK EVENT ===");
         console.log("ontrack fired from user:", userId, "Streams:", event.streams);
         console.log("ontrack event details:", {
           track: event.track,
@@ -223,8 +219,6 @@ const VideoChat = () => {
           trackEnabled: event.track?.enabled,
           trackReadyState: event.track?.readyState
         });
-        console.log("Current remote streams count:", remoteStreams.length);
-        console.log("=== END ONTRACK EVENT ===");
 
         if (!event.streams || !event.streams[0]) {
           console.warn("Received ontrack without stream");
@@ -256,28 +250,16 @@ const VideoChat = () => {
         });
 
         setRemoteStreams(prevStreams => {
-          console.log(`Setting remote streams. Previous count: ${prevStreams.length}`);
           const exists = prevStreams.find(s => s.userId === userId);
           if (exists) {
             console.log(`Updating existing stream for ${userId} (track replacement)`);
-            const updated = prevStreams.map(s =>
-              s.userId === userId ? { ...s, stream: newStream, videoOff: false } : s
+            // Update the existing stream with the new stream
+            return prevStreams.map(s =>
+              s.userId === userId ? { ...s, stream: newStream } : s
             );
-            console.log(`Updated streams count: ${updated.length}`);
-            return updated;
           }
           console.log(`Adding new stream for ${userId}`);
-          const updated = [...prevStreams, { userId, stream: newStream, videoOff: false }];
-          console.log(`New streams count: ${updated.length}`);
-          
-          // Clear ongoing call attempt since we successfully received a stream
-          setOngoingCallAttempts(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(userId);
-            return newSet;
-          });
-          
-          return updated;
+          return [...prevStreams, { userId, stream: newStream }];
         });
 
         // Set track.onended for cleanup and ensure tracks are enabled
@@ -374,9 +356,9 @@ const VideoChat = () => {
             console.log('Enabling video track before adding to peer connection');
             videoTrack.enabled = true;
           }
-          console.log('Adding video track to peer connection for user:', userId);
+          console.log('Adding video track to peer connection');
           const sender = peerConnection.addTrack(videoTrack, localStreamRef.current);
-          console.log('Video track sender for user:', userId, sender);
+          console.log('Video track sender:', sender);
         }
         if (audioTrack) {
           // Ensure audio track is enabled
@@ -489,20 +471,11 @@ const VideoChat = () => {
     try {
       console.log('Initiating call with:', userId);
 
-      // Check if we're already attempting to call this user
-      if (ongoingCallAttempts.has(userId)) {
-        console.log('Call attempt already in progress for:', userId);
-        return;
-      }
-
       // Check if we already have a peer connection for this user
       if (peerConnectionsRef.current[userId]) {
         console.log('Peer connection already exists for:', userId);
         return;
       }
-
-      // Mark this call attempt as ongoing
-      setOngoingCallAttempts(prev => new Set(prev).add(userId));
 
       // Get roomId from state or socket
       const currentRoomId = roomId || socket?.roomId;
@@ -510,11 +483,6 @@ const VideoChat = () => {
         console.error('No roomId available for call initiation');
         console.log('Current roomId state:', roomId);
         console.log('Socket roomId:', socket?.roomId);
-        setOngoingCallAttempts(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(userId);
-          return newSet;
-        });
         return;
       }
 
@@ -542,15 +510,6 @@ const VideoChat = () => {
         roomId: currentRoomId
       });
 
-      // Remove from ongoing attempts after a delay
-      setTimeout(() => {
-        setOngoingCallAttempts(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(userId);
-          return newSet;
-        });
-      }, 5000); // 5 second timeout
-
     } catch (error) {
       console.error('Failed to initiate call:', error);
       // Handle connection failure inline
@@ -564,15 +523,8 @@ const VideoChat = () => {
 
       // Remove failed streams
       setRemoteStreams(prev => prev.filter(s => s.userId !== userId));
-
-      // Remove from ongoing attempts
-      setOngoingCallAttempts(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(userId);
-        return newSet;
-      });
     }
-  }, [roomId, socket, getUserMedia, createPeerConnection, ongoingCallAttempts]);
+  }, [roomId, socket, getUserMedia, createPeerConnection]);
 
   // Add function to reset peer connection (moved before useEffect that uses it)
   const resetPeerConnection = useCallback((userId) => {
@@ -714,11 +666,6 @@ const VideoChat = () => {
 
           console.log('Sending answer to:', from);
           socket.emit('answer', { to: from, answer, roomId: roomId || socket?.roomId });
-        } else if (peerConnection.signalingState === 'have-local-offer') {
-          // We already have a local offer, this means we're in a race condition
-          // We should ignore this offer and wait for the answer to our own offer
-          console.log('Ignoring offer from', from, '- already have local offer');
-          console.log('Waiting for answer to our own offer');
         } else {
           console.warn('Cannot set remote offer - wrong signaling state:', peerConnection.signalingState);
           console.log('Peer connection state:', {
@@ -761,28 +708,25 @@ const VideoChat = () => {
 
             // Apply any stored ICE candidates after remote description is set
             await applyBufferedCandidates(from, peerConnection, pendingCandidates);
-          } else if (peerConnection.signalingState === 'stable') {
-            // We're already connected, this might be a duplicate answer
-            console.log('Ignoring answer from', from, '- already in stable state');
-          } else {
-            console.warn('Cannot set remote answer - wrong signaling state:', peerConnection.signalingState);
-            console.log('Peer connection state:', {
-              signalingState: peerConnection.signalingState,
-              connectionState: peerConnection.connectionState,
-              iceConnectionState: peerConnection.iceConnectionState
-            });
-            
-            // Reset the connection if it's in a bad state
-            if (peerConnection.signalingState !== 'have-local-offer' && peerConnection.signalingState !== 'stable') {
-              console.log('Resetting peer connection due to bad signaling state for answer');
-              resetPeerConnection(from);
-            }
+                  } else {
+          console.warn('Cannot set remote answer - wrong signaling state:', peerConnection.signalingState);
+          console.log('Peer connection state:', {
+            signalingState: peerConnection.signalingState,
+            connectionState: peerConnection.connectionState,
+            iceConnectionState: peerConnection.iceConnectionState
+          });
+          
+          // Reset the connection if it's in a bad state
+          if (peerConnection.signalingState !== 'have-local-offer') {
+            console.log('Resetting peer connection due to bad signaling state for answer');
+            resetPeerConnection(from);
           }
-        } catch (err) {
-          console.error('Failed to set remote description:', err);
-          // Reset connection on error
-          resetPeerConnection(from);
         }
+      } catch (err) {
+        console.error('Failed to set remote description:', err);
+        // Reset connection on error
+        resetPeerConnection(from);
+      }
       } else {
         console.warn('No peer connection found for answer from:', from);
         console.log('Available peer connections:', Object.keys(peerConnectionsRef.current));
@@ -882,30 +826,6 @@ const VideoChat = () => {
         ...prev,
         [userId]: isVideoOff
       }));
-      
-      // If video is turned off, we might not have a stream, so ensure we have an entry
-      if (isVideoOff) {
-        setRemoteStreams(prev => {
-          const exists = prev.find(s => s.userId === userId);
-          if (!exists) {
-            console.log(`Adding placeholder stream for ${userId} (video off)`);
-            // Create a placeholder stream entry for users with video off
-            return [...prev, { userId, stream: null, videoOff: true }];
-          }
-          return prev;
-        });
-      } else {
-        // If video is turned on, ensure we have a proper stream entry
-        setRemoteStreams(prev => {
-          const exists = prev.find(s => s.userId === userId);
-          if (exists && exists.videoOff) {
-            console.log(`Removing placeholder stream for ${userId} (video on)`);
-            // Remove placeholder entry when video is turned back on
-            return prev.filter(s => s.userId !== userId);
-          }
-          return prev;
-        });
-      }
       
       // Force refresh remote streams to ensure video state is properly reflected
       setRemoteStreams(prev => {
@@ -1256,29 +1176,18 @@ const VideoChat = () => {
               timestamp: Date.now()
             });
             
-            // Only re-enable if the user hasn't intentionally disabled it
-            if (!videoTrack.enabled && videoTrack.readyState === 'live' && !isVideoOff) {
-              console.log('Re-enabling disabled video track (not intentionally disabled)');
+            // If track is disabled but live, try to re-enable it
+            if (!videoTrack.enabled && videoTrack.readyState === 'live') {
+              console.log('Re-enabling disabled video track');
               videoTrack.enabled = true;
             }
           }
           
-          // Synchronize video state with track state, but respect user's intentional changes
+          // Synchronize video state with track state
           const isTrackEnabled = videoTrack.enabled;
           if (isVideoOff !== !isTrackEnabled) {
-            // Only sync if the track state doesn't match the intended state
-            // This prevents overriding user's intentional video toggle
-            console.log('Video state mismatch detected:', { 
-              isTrackEnabled, 
-              isVideoOff, 
-              intendedTrackState: !isVideoOff 
-            });
-            
-            // Only update if the track is in an unexpected state
-            if (isTrackEnabled !== !isVideoOff) {
-              console.log('Correcting track state to match user intention');
-              videoTrack.enabled = !isVideoOff;
-            }
+            console.log('Synchronizing video state:', { isTrackEnabled, isVideoOff: !isTrackEnabled });
+            setIsVideoOff(!isTrackEnabled);
           }
           
           // If track has ended, try to get a new stream
