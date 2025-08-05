@@ -622,12 +622,13 @@ const VideoChat = () => {
       // Also store roomId in socket for backup
       socket.roomId = roomId;
       setIsHost(isHost);
+      // Now users includes all participants including the current user
       setParticipants(users.filter(user => user && user.id));
       setConnectionStatus('connected');
       setIsJoined(true);
       clearChat();
 
-      // Initialize connections with existing users immediately
+      // Initialize connections with other users (excluding self)
       users.forEach((user, index) => {
         if (user && user.id && user.id !== socket.id) {
           console.log('Initializing connection with existing user:', user.id);
@@ -960,6 +961,14 @@ const VideoChat = () => {
       }
     });
 
+    // ---- PARTICIPANTS UPDATED handler ----
+    socket.on('participantsUpdated', ({ users }) => {
+      console.log('Participants updated:', users);
+      if (Array.isArray(users)) {
+        setParticipants(users.filter(user => user && user.id));
+      }
+    });
+
 
 
     return () => {
@@ -975,6 +984,7 @@ const VideoChat = () => {
       socket.off('userSpeaking');
       socket.off('videoStateChanged');
       socket.off('userJoined');
+      socket.off('participantsUpdated');
     };
   }, [isHost, initiateCall, applyBufferedCandidates, resetPeerConnection]);
 

@@ -225,24 +225,29 @@ function joinRoom(socket, { roomId, username, isHost }) {
     };
     users.set(socket.id, userData);
 
-    // Get all users in the room
-    const usersInRoom = Array.from(rooms.get(roomId))
+    // Get all users in the room (including the current user)
+    const allUsersInRoom = Array.from(rooms.get(roomId))
         .map(id => users.get(id))
-        .filter(user => user && user.id !== socket.id);
+        .filter(user => user && user.id);
 
-    console.log('Users in room:', usersInRoom);
+    console.log('All users in room:', allUsersInRoom);
 
     // Send room info to the new user
     socket.emit('roomJoined', {
         roomId,
-        users: usersInRoom,
+        users: allUsersInRoom,
         isHost,
         user: userData
     });
 
-    // Notify others in the room
+    // Notify others in the room about the new user
     socket.to(roomId).emit('userJoined', {
         user: userData
+    });
+
+    // Also send updated participant list to all users in the room
+    io.to(roomId).emit('participantsUpdated', {
+        users: allUsersInRoom
     });
 }
 
@@ -268,6 +273,17 @@ function handleDisconnect(socket) {
             username: user.username,
             isHost: user.isHost
         });
+
+        // Send updated participant list to remaining users
+        if (rooms.has(roomId) && rooms.get(roomId).size > 0) {
+            const remainingUsers = Array.from(rooms.get(roomId))
+                .map(id => users.get(id))
+                .filter(user => user && user.id);
+            
+            socket.to(roomId).emit('participantsUpdated', {
+                users: remainingUsers
+            });
+        }
     }
 }
 
