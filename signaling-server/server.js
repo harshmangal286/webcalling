@@ -23,6 +23,8 @@ const io = socketIO(server, {
 const rooms = new Map(); // Track rooms and their participants
 const users = new Map(); // Track user details
 const roomMessages = new Map();
+// Add a new map to track pending join requests
+const pendingJoinRequests = new Map(); // roomId -> [{ socketId, username }]
 
 io.on('connection', (socket) => {
     console.log('New user connected:', socket.id);
@@ -62,13 +64,60 @@ io.on('connection', (socket) => {
             return;
         }
 
-        try {
-            // Join the room
-            joinRoom(socket, { roomId, username, isHost: false });
-            console.log(`User ${username} (${socket.id}) joined room ${roomId} successfully`);
-        } catch (error) {
-            console.error('Error joining room:', error);
-            socket.emit('error', { message: 'Failed to join room' });
+        // Find the host in the room
+        const hostId = Array.from(rooms.get(roomId)).find(id => {
+            const user = users.get(id);
+            return user && user.isHost;
+        });
+        if (!hostId) {
+            socket.emit('error', { message: 'No host found in room' });
+            return;
+        }
+        // Add to pending requests
+        if (!pendingJoinRequests.has(roomId)) pendingJoinRequests.set(roomId, []);
+        pendingJoinRequests.get(roomId).push({ socketId: socket.id, username });
+        // Notify the host
+        io.to(hostId).emit('joinRequest', {
+            roomId,
+            request: { socketId: socket.id, username }
+        });
+        // Notify the participant that their request is pending
+        socket.emit('joinPending', { roomId });
+    });
+
+    // Host approves join request
+    socket.on('approveJoin', ({ roomId, socketId }) => {
+        const user = users.get(socket.id);
+        if (!user || !user.isHost) return;
+        const requests = pendingJoinRequests.get(roomId) || [];
+        const reqIndex = requests.findIndex(r => r.socketId === socketId);
+        if (reqIndex === -1) return;
+        const { username } = requests[reqIndex];
+        // Remove from pending
+        requests.splice(reqIndex, 1);
+        pendingJoinRequests.set(roomId, requests);
+        // Add to room
+        const joinSocket = io.sockets.sockets.get(socketId);
+        if (joinSocket) {
+            joinRoom(joinSocket, { roomId, username, isHost: false });
+            joinSocket.emit('joinApproved', { roomId });
+        }
+    });
+
+    // Host denies join request
+    socket.on('denyJoin', ({ roomId, socketId }) => {
+        const user = users.get(socket.id);
+        if (!user || !user.isHost) return;
+        const requests = pendingJoinRequests.get(roomId) || [];
+        const reqIndex = requests.findIndex(r => r.socketId === socketId);
+        if (reqIndex === -1) return;
+        // Remove from pending
+        requests.splice(reqIndex, 1);
+        pendingJoinRequests.set(roomId, requests);
+        // Notify the participant
+        const joinSocket = io.sockets.sockets.get(socketId);
+        if (joinSocket) {
+            joinSocket.emit('joinDenied', { roomId });
         }
     });
 
@@ -190,6 +239,19 @@ io.on('connection', (socket) => {
             socket.to(roomId).emit('videoStateChanged', {
                 userId: socket.id,
                 isVideoOff
+            });
+        }
+    });
+
+    // Handle full mesh connectivity request from host
+    socket.on('enableFullMesh', ({ roomId }) => {
+        const user = users.get(socket.id);
+        if (user && user.isHost && rooms.has(roomId)) {
+            console.log(`Host ${socket.id} requesting full mesh connectivity for room ${roomId}`);
+            // Broadcast to all participants in the room to connect with each other
+            io.to(roomId).emit('enableFullMesh', {
+                roomId,
+                requestedBy: socket.id
             });
         }
     });

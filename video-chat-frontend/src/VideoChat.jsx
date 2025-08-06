@@ -45,9 +45,18 @@ const VideoChat = () => {
   // First, add a new state to track remote video states
   const [remoteVideoStates, setRemoteVideoStates] = useState({});
 
+  // Add state for join request/approval
+  const [joinPending, setJoinPending] = useState(false);
+  const [joinDenied, setJoinDenied] = useState(false);
+  const [pendingRequests, setPendingRequests] = useState([]); // For host
+
+  // Add this state
+  const [localVideoKey, setLocalVideoKey] = useState(0);
+
   // Function to get my camera and mic
   // This function should ONLY return the stream or throw error
   const getUserMediaWithCheck = async () => {
+    console.log("🟢 getUserMediaWithCheck() called");
     const hasPermission = await checkMediaPermissions();
     const devices = await navigator.mediaDevices.enumerateDevices();
     const hasCamera = devices.some(d => d.kind === 'videoinput');
@@ -63,6 +72,7 @@ const VideoChat = () => {
       setLocalStream(stream);
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
+        console.log('✅ Local stream assigned to video element');
         return stream;
       }
     } catch (err) {
@@ -84,6 +94,10 @@ const VideoChat = () => {
       };
     }
   }, [localStream]);
+  if (!localStreamRef.current) {
+    console.warn("⛔ renderLocalVideo: localStreamRef.current is NULL");
+  }
+  
 
 
 
@@ -99,7 +113,7 @@ const VideoChat = () => {
     if (localStreamRef.current && localStreamRef.current.active) {
       const videoTrack = localStreamRef.current.getVideoTracks()[0];
       const audioTrack = localStreamRef.current.getAudioTracks()[0];
-      
+
       // Check if tracks are still live
       if (videoTrack && videoTrack.readyState === 'live' && audioTrack && audioTrack.readyState === 'live') {
         console.log("Returning existing active local stream");
@@ -185,6 +199,12 @@ const VideoChat = () => {
     // Initialize stream
     initializeLocalStream();
   }, [socket, getUserMedia]);
+  useEffect(() => {
+    console.log("🟢 useEffect: Calling getUserMediaWithCheck()");
+    getUserMediaWithCheck();
+  }, []);
+  
+  
 
   // Setup connection with another user
   const createPeerConnection = useCallback((userId) => {
@@ -194,16 +214,18 @@ const VideoChat = () => {
       const configuration = {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
-          { urls: 'stun:stun3.l.google.com:19302' },
-          { urls: 'stun:stun4.l.google.com:19302' }
+          { urls: 'stun:openrelay.metered.ca:80' },
+          {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject',
+          },
         ],
         iceCandidatePoolSize: 10
       };
 
       const peerConnection = new RTCPeerConnection(configuration);
-      
+
       // Add connection state logging
       peerConnection.onsignalingstatechange = () => {
         console.log(`Signaling state (${userId}):`, peerConnection.signalingState);
@@ -269,7 +291,7 @@ const VideoChat = () => {
             console.log(`Enabling ${track.kind} track for user ${userId}`);
             track.enabled = true;
           }
-          
+
           track.onended = () => {
             console.log("Track ended:", track.kind, "for user:", userId);
           };
@@ -279,12 +301,12 @@ const VideoChat = () => {
           track.onunmute = () => {
             console.log("Track unmuted:", track.kind, "for user:", userId);
           };
-          
+
           // Handle track replacement events
           track.onended = () => {
             console.log("Track ended:", track.kind, "for user:", userId);
             // Force refresh remote streams when track ends
-            setRemoteStreams(prev => prev.map(s => 
+            setRemoteStreams(prev => prev.map(s =>
               s.userId === userId ? { ...s, stream: newStream } : s
             ));
           };
@@ -308,7 +330,7 @@ const VideoChat = () => {
         if (peerConnection.connectionState === 'failed') {
           // Handle connection failure inline to avoid circular dependency
           console.log('Handling connection failure for:', userId);
-          
+
           // Clean up failed connection
           if (peerConnectionsRef.current[userId]) {
             peerConnectionsRef.current[userId].close();
@@ -328,6 +350,7 @@ const VideoChat = () => {
       peerConnection.onicecandidate = (event) => {
         if (event.candidate && roomId) {
           console.log('Sending ICE candidate to:', userId);
+          console.log("❄️ ICE Candidate:", event.candidate);
           socket.emit('candidate', {
             to: userId,
             candidate: event.candidate,
@@ -340,7 +363,7 @@ const VideoChat = () => {
       if (localStreamRef.current) {
         const videoTrack = localStreamRef.current.getVideoTracks()[0];
         const audioTrack = localStreamRef.current.getAudioTracks()[0];
-        
+
         console.log('Local stream details:', {
           hasVideoTrack: !!videoTrack,
           hasAudioTrack: !!audioTrack,
@@ -349,7 +372,7 @@ const VideoChat = () => {
           videoTrackReadyState: videoTrack?.readyState,
           audioTrackReadyState: audioTrack?.readyState
         });
-        
+
         if (videoTrack) {
           // Ensure video track is enabled
           if (!videoTrack.enabled) {
@@ -376,7 +399,7 @@ const VideoChat = () => {
 
       // Store the connection
       peerConnectionsRef.current[userId] = peerConnection;
-      
+
       // Add timeout to restart ICE if connection doesn't establish
       setTimeout(() => {
         if (peerConnection.iceConnectionState === 'new' || peerConnection.iceConnectionState === 'checking') {
@@ -384,7 +407,7 @@ const VideoChat = () => {
           peerConnection.restartIce();
         }
       }, 10000); // 10 second timeout
-      
+
       return peerConnection;
     } catch (error) {
       console.error('Error creating peer connection:', error);
@@ -441,7 +464,7 @@ const VideoChat = () => {
     }
   };
 
-  // Handle room joining
+  // Update joinRoom to handle joinPending
   const joinRoom = async (roomId, username) => {
     try {
       console.log('Attempting to join room:', { roomId, username });
@@ -459,6 +482,9 @@ const VideoChat = () => {
 
       // Set connection status to connecting
       setConnectionStatus('connecting');
+      // Set joinPending to false in case of retry
+      setJoinPending(false);
+      setJoinDenied(false);
 
     } catch (error) {
       console.error('Join room error:', error);
@@ -525,7 +551,7 @@ const VideoChat = () => {
       console.error('Failed to initiate call:', error);
       // Handle connection failure inline
       console.log('Handling connection failure for:', userId);
-      
+
       // Clean up failed connection
       if (peerConnectionsRef.current[userId]) {
         peerConnectionsRef.current[userId].close();
@@ -541,7 +567,7 @@ const VideoChat = () => {
   const resetPeerConnection = useCallback((userId) => {
     console.log('Resetting peer connection for:', userId);
     cleanupPeerConnection(userId);
-    
+
     // Try to re-establish connection if we're the host
     if (isHost) {
       setTimeout(() => {
@@ -584,18 +610,18 @@ const VideoChat = () => {
   useEffect(() => {
     socket.on('roomCreated', ({ roomId }) => {
       console.log('Room created event received:', roomId);
-      
+
       if (!roomId) {
         console.error('No roomId received');
         return;
       }
-      
+
       setRoomId(roomId);
       setIsHost(true);
       setConnectionStatus('connected');
       setIsJoined(true);
       clearChat();
-      
+
       try {
         navigator.clipboard.writeText(roomId);
         console.log('Room created:', roomId);
@@ -667,7 +693,7 @@ const VideoChat = () => {
     socket.on('offer', async ({ from, offer }) => {
       try {
         console.log('Received offer from:', from);
-        
+
         if (!from || !offer) {
           console.error('Invalid offer data received:', { from, offer });
           return;
@@ -696,17 +722,17 @@ const VideoChat = () => {
 
           console.log('Sending answer to:', from);
           socket.emit('answer', { to: from, answer, roomId: roomId || socket?.roomId });
-          
+
         } else if (peerConnection.signalingState === 'have-local-offer') {
           // Offer collision: both peers sent offers simultaneously
           console.log('Offer collision detected with:', from);
-          
+
           // Check if rollback is supported (try-catch is more reliable than feature detection)
           try {
             // For simplicity, we'll roll back our offer and accept theirs
             // First, roll back our local description
             await peerConnection.setLocalDescription({ type: 'rollback' });
-            
+
             // Now we should be in 'stable' state, so we can accept their offer
             if (peerConnection.signalingState === 'stable') {
               await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
@@ -729,14 +755,14 @@ const VideoChat = () => {
             console.warn('Rollback not supported, resetting connection:', rollbackError);
             resetPeerConnection(from);
           }
-          
+
         } else if (peerConnection.signalingState === 'have-remote-offer') {
           // We already have a remote offer, this shouldn't happen normally
           console.warn('Received offer while already having remote offer from:', from);
           // We can either ignore this offer or reset the connection
           // For now, we'll ignore it
           console.log('Ignoring duplicate offer from:', from);
-          
+
         } else {
           console.warn('Cannot set remote offer - unexpected signaling state:', peerConnection.signalingState);
           console.log('Peer connection state:', {
@@ -744,7 +770,7 @@ const VideoChat = () => {
             connectionState: peerConnection.connectionState,
             iceConnectionState: peerConnection.iceConnectionState
           });
-          
+
           // Reset the connection if it's in an unexpected state
           console.log('Resetting peer connection due to unexpected signaling state');
           resetPeerConnection(from);
@@ -761,7 +787,7 @@ const VideoChat = () => {
     // ---- ANSWER handler ----
     socket.on('answer', async ({ from, answer }) => {
       console.log('Received answer from:', from);
-      
+
       if (!from || !answer) {
         console.error('Invalid answer data received:', { from, answer });
         return;
@@ -790,11 +816,11 @@ const VideoChat = () => {
               connectionState: peerConnection.connectionState,
               iceConnectionState: peerConnection.iceConnectionState
             });
-            
+
             // Only reset if it's in an unexpected state (not stable, have-local-offer, or have-remote-offer)
-            if (peerConnection.signalingState !== 'stable' && 
-                peerConnection.signalingState !== 'have-local-offer' && 
-                peerConnection.signalingState !== 'have-remote-offer') {
+            if (peerConnection.signalingState !== 'stable' &&
+              peerConnection.signalingState !== 'have-local-offer' &&
+              peerConnection.signalingState !== 'have-remote-offer') {
               console.log('Resetting peer connection due to bad signaling state for answer');
               resetPeerConnection(from);
             }
@@ -814,7 +840,7 @@ const VideoChat = () => {
     // ---- ICE Candidate handler ----
     socket.on('candidate', async ({ from, candidate }) => {
       console.log('Received ICE candidate from:', from);
-      
+
       if (!from || !candidate) {
         console.error('Invalid candidate data received:', { from, candidate });
         return;
@@ -903,7 +929,7 @@ const VideoChat = () => {
         ...prev,
         [userId]: isVideoOff
       }));
-      
+
       // Force refresh remote streams to ensure video state is properly reflected
       setRemoteStreams(prev => {
         const updated = prev.map(streamInfo => {
@@ -915,7 +941,7 @@ const VideoChat = () => {
                 track.enabled = !isVideoOff;
               }
             });
-            
+
             // Force refresh the stream object to trigger re-render
             return { ...streamInfo, stream: streamInfo.stream };
           }
@@ -960,7 +986,29 @@ const VideoChat = () => {
       }
     });
 
-
+    socket.on('joinPending', ({ roomId }) => {
+      setJoinPending(true);
+      setJoinDenied(false);
+      setConnectionStatus('waiting-approval');
+    });
+    socket.on('joinApproved', ({ roomId }) => {
+      setJoinPending(false);
+      setJoinDenied(false);
+      setConnectionStatus('connected');
+      setIsJoined(true);
+      // RoomJoined event will handle the rest
+    });
+    socket.on('joinDenied', ({ roomId }) => {
+      setJoinPending(false);
+      setJoinDenied(true);
+      setConnectionStatus('disconnected');
+      setIsJoined(false);
+    });
+    socket.on('joinRequest', ({ roomId, request }) => {
+      // Only host should handle this
+      if (!isHost) return;
+      setPendingRequests(prev => [...prev, { ...request, roomId }]);
+    });
 
     return () => {
       socket.off('roomCreated');
@@ -975,6 +1023,10 @@ const VideoChat = () => {
       socket.off('userSpeaking');
       socket.off('videoStateChanged');
       socket.off('userJoined');
+      socket.off('joinPending');
+      socket.off('joinApproved');
+      socket.off('joinDenied');
+      socket.off('joinRequest');
     };
   }, [isHost, initiateCall, applyBufferedCandidates, resetPeerConnection]);
 
@@ -1017,62 +1069,197 @@ const VideoChat = () => {
     }
   };
 
-  const toggleVideo = () => {
+  // const toggleVideo = async () => {
+  //   if (localStreamRef.current) {
+  //     const videoTracks = localStreamRef.current.getVideoTracks();
+  //     const videoTrack = videoTracks[0];
+  //     const currentTrackEnabled = videoTrack?.enabled;
+  //     const newTrackEnabled = !currentTrackEnabled;
+  //     console.log('Toggling video:', { current: currentTrackEnabled, new: newTrackEnabled });
+  //     if (newTrackEnabled) {
+  //       // Turning video ON
+  //       if (!videoTrack || videoTrack.readyState !== 'live') {
+  //         // Track is ended or missing, stop and remove all old video tracks before reacquiring
+  //         videoTracks.forEach(track => {
+  //           try {
+  //             track.stop();
+  //             localStreamRef.current.removeTrack(track);
+  //             console.log('Stopped and removed old video track:', track.id);
+  //           } catch (err) {
+  //             console.warn('Error stopping/removing old video track:', err);
+  //           }
+  //         });
+  //         try {
+  //           const newStream = await navigator.mediaDevices.getUserMedia({ video: true });
+  //           const newVideoTrack = newStream.getVideoTracks()[0];
+  //           if (newVideoTrack) {
+  //             await Promise.all(Object.values(peerConnectionsRef.current).map(async peerConnection => {
+  //               const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+  //               if (sender) {
+  //                 await new Promise(res => setTimeout(res, 100));
+  //                 await sender.replaceTrack(newVideoTrack).catch(err => {
+  //                   console.warn('replaceTrack error after reacquire:', err);
+  //                 });
+  //               }
+  //             }));
+  //             localStreamRef.current.addTrack(newVideoTrack);
+  //             // Always use the same stream for local preview
+  //             if (localVideoRef.current) {
+  //               try {
+  //                 localVideoRef.current.srcObject = null;
+  //                 localVideoRef.current.srcObject = localStreamRef.current;
+  //                 localVideoRef.current.play().catch(err => {
+  //                   if (err.name !== 'AbortError') {
+  //                     console.warn('Forced play after reacquire failed:', err);
+  //                   }
+  //                 });
+  //                 console.log('Assigned localStreamRef.current to local video element after reacquire');
+  //               } catch (err) {
+  //                 console.warn('Error forcing local video refresh:', err);
+  //               }
+  //             }
+  //             setIsVideoOff(false);
+  //             setLocalVideoKey(k => k + 1); // Still force React remount for safety
+  //             console.log('Recovered and replaced ended video track (stable)');
+  //           } else {
+  //             console.error('No new video track found after getUserMedia');
+  //             setError('No new video track found after getUserMedia');
+  //           }
+  //         } catch (err) {
+  //           setError('Failed to reacquire camera: ' + (err && err.message ? err.message : err));
+  //           setIsVideoOff(true);
+  //           console.error('Error reacquiring camera:', err);
+  //         }
+  //       } else {
+  //         // Track is live, just enable it
+  //         videoTrack.enabled = true;
+  //         setIsVideoOff(false);
+  //         Object.values(peerConnectionsRef.current).forEach(peerConnection => {
+  //           const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+  //           if (sender && videoTrack) {
+  //             sender.replaceTrack(videoTrack).catch(err => {
+  //               console.warn('replaceTrack error:', err);
+  //             });
+  //           }
+  //         });
+  //       }
+  //     } else {
+  //       // Turning video OFF
+  //       videoTracks.forEach(track => {
+  //         track.enabled = false;
+  //       });
+  //       setIsVideoOff(true);
+  //       Object.values(peerConnectionsRef.current).forEach(peerConnection => {
+  //         const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+  //         if (sender && videoTrack) {
+  //           sender.replaceTrack(videoTrack).catch(err => {
+  //             console.warn('replaceTrack error:', err);
+  //           });
+  //         }
+  //       });
+  //     }
+  //     // Emit video state change to server so others are notified
+  //     if (roomId) {
+  //       socket.emit('videoStateChange', {
+  //         roomId,
+  //         isVideoOff: !newTrackEnabled
+  //       });
+  //     }
+  //   }
+  // };
+  const toggleVideo = async () => {
     if (localStreamRef.current) {
       const videoTracks = localStreamRef.current.getVideoTracks();
-      
-      // Check current state
-      const currentTrackEnabled = videoTracks[0]?.enabled;
+      const videoTrack = videoTracks[0];
+      const currentTrackEnabled = videoTrack?.enabled;
       const newTrackEnabled = !currentTrackEnabled;
-      
       console.log('Toggling video:', { current: currentTrackEnabled, new: newTrackEnabled });
       
-      // Set track state
-      videoTracks.forEach(track => {
-        track.enabled = newTrackEnabled;
-      });
-      
-      // Update state
-      setIsVideoOff(!newTrackEnabled);
-      
-      console.log('Video toggled:', { trackEnabled: newTrackEnabled, isVideoOff: !newTrackEnabled });
-
-      // Replace track in all peer connections to ensure remote peers get the updated track
-      Object.values(peerConnectionsRef.current).forEach(peerConnection => {
-        const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
-        if (sender && videoTracks[0]) {
-          console.log('Replacing video track in peer connection');
-          sender.replaceTrack(videoTracks[0]).catch(err => {
-            console.error('Error replacing video track:', err);
+      if (newTrackEnabled) {
+        // Turning video ON
+        if (!videoTrack || videoTrack.readyState !== 'live') {
+          // Track is ended or missing, stop and remove all old video tracks before reacquiring
+          videoTracks.forEach(track => {
+            try {
+              track.stop();
+              localStreamRef.current.removeTrack(track);
+              console.log('Stopped and removed old video track:', track.id);
+            } catch (err) {
+              console.warn('Error stopping/removing old video track:', err);
+            }
+          });
+          try {
+            const newStream = await navigator.mediaDevices.getUserMedia({ video: true });
+            const newVideoTrack = newStream.getVideoTracks()[0];
+            if (newVideoTrack) {
+              await Promise.all(Object.values(peerConnectionsRef.current).map(async peerConnection => {
+                const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+                if (sender) {
+                  await new Promise(res => setTimeout(res, 100));
+                  await sender.replaceTrack(newVideoTrack).catch(err => {
+                    console.warn('replaceTrack error after reacquire:', err);
+                  });
+                }
+              }));
+              localStreamRef.current.addTrack(newVideoTrack);
+              // Always use the same stream for local preview
+              if (localVideoRef.current) {
+                try {
+                  localVideoRef.current.srcObject = null;
+                  localVideoRef.current.srcObject = localStreamRef.current;
+                  localVideoRef.current.play().catch(err => {
+                    if (err.name !== 'AbortError') {
+                      console.warn('Forced play after reacquire failed:', err);
+                    }
+                  });
+                  console.log('👍Assigned localStreamRef.current to local video element after reacquire');
+                } catch (err) {
+                  console.warn('Error forcing local video refresh:', err);
+                }
+              }
+              setIsVideoOff(false);
+              setLocalVideoKey(prev => prev + 1); // Force React remount
+            }
+          } catch (err) {
+            console.error('Error reacquiring local video stream:', err);
+            setIsVideoOff(true);
+          }
+        } else {
+          // Track is live, just enable it
+          videoTrack.enabled = true;
+          setIsVideoOff(false);
+          Object.values(peerConnectionsRef.current).forEach(peerConnection => {
+            const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+            if (sender && videoTrack) {
+              sender.replaceTrack(videoTrack).catch(err => {
+                console.warn('replaceTrack error:', err);
+              });
+            }
           });
         }
-      });
-
-      // Let others know I turned my camera off/on
-      socket.emit('videoStateChange', {
-        roomId,
-        isVideoOff: !newTrackEnabled
-      });
-      
-      // Force re-enable if turning on and track is still disabled
-      if (newTrackEnabled) {
-        setTimeout(() => {
-          const track = videoTracks[0];
-          if (track && !track.enabled && track.readyState === 'live') {
-            console.log('Force re-enabling video track');
-            track.enabled = true;
-            setIsVideoOff(false);
+      } else {
+        // Turning video OFF
+        videoTracks.forEach(track => {
+          track.enabled = false;
+        });
+        setIsVideoOff(true);
+        Object.values(peerConnectionsRef.current).forEach(peerConnection => {
+          const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+          if (sender && videoTrack) {
+            sender.replaceTrack(videoTrack).catch(err => {
+              console.warn('replaceTrack error:', err);
+            });
           }
-        }, 100);
+        });
       }
       
-      // Force refresh remote streams after a delay to ensure changes propagate
-      setTimeout(() => {
-        setRemoteStreams(prev => prev.map(streamInfo => ({
-          ...streamInfo,
-          stream: streamInfo.stream
-        })));
-      }, 200);
+      // Emit video state change to server so others are notified
+      if (roomId) {
+        socket.emit('videoStateChange', {
+          roomId,
+          isVideoOff: !newTrackEnabled
+        });
+      }
     }
   };
 
@@ -1228,7 +1415,7 @@ const VideoChat = () => {
         console.log('Setting local stream to video element from monitoring');
         localVideoRef.current.srcObject = localStreamRef.current;
       }
-      
+
       // Force play if paused
       if (localVideoRef.current.paused) {
         localVideoRef.current.play().catch(err => {
@@ -1256,21 +1443,18 @@ const VideoChat = () => {
               muted: videoTrack.muted,
               timestamp: Date.now()
             });
-            
             // If track is disabled but live, try to re-enable it
             if (!videoTrack.enabled && videoTrack.readyState === 'live') {
               console.log('Re-enabling disabled video track');
               videoTrack.enabled = true;
             }
           }
-          
-          // Synchronize video state with track state
+          // Only set isVideoOff to true if the track is definitely disabled or ended
           const isTrackEnabled = videoTrack.enabled;
-          if (isVideoOff !== !isTrackEnabled) {
-            console.log('Synchronizing video state:', { isTrackEnabled, isVideoOff: !isTrackEnabled });
-            setIsVideoOff(!isTrackEnabled);
+          if (!isTrackEnabled && !isVideoOff) {
+            console.log('Setting isVideoOff to true because track is disabled');
+            setIsVideoOff(true);
           }
-          
           // If track has ended, try to get a new stream
           if (videoTrack.readyState === 'ended' && localStreamRef.current) {
             console.log('Video track ended, attempting to get new stream');
@@ -1283,9 +1467,7 @@ const VideoChat = () => {
         }
       }
     };
-
     checkVideoTrack();
-    // Check less frequently to reduce console spam
     const interval = setInterval(checkVideoTrack, 5000);
     return () => clearInterval(interval);
   }, [getUserMedia, isVideoOff]);
@@ -1297,7 +1479,7 @@ const VideoChat = () => {
       videoElements.forEach(video => {
         const userId = video.dataset.userId;
         const isVideoOff = remoteVideoStates[userId];
-        
+
         if (video.srcObject) {
           const videoTracks = video.srcObject.getVideoTracks();
           videoTracks.forEach(track => {
@@ -1305,7 +1487,7 @@ const VideoChat = () => {
               track.enabled = !isVideoOff;
             }
           });
-          
+
           // Force play if video is enabled
           if (!isVideoOff && video.paused) {
             video.play().catch(err => {
@@ -1327,17 +1509,17 @@ const VideoChat = () => {
   useEffect(() => {
     const syncVideoStates = () => {
       if (!localStreamRef.current) return;
-      
+
       const videoTrack = localStreamRef.current.getVideoTracks()[0];
       if (videoTrack && videoTrack.readyState === 'live') {
         const actualTrackEnabled = videoTrack.enabled;
         const expectedVideoOff = isVideoOff;
-        
+
         // Sync if there's a mismatch
         if (actualTrackEnabled === expectedVideoOff) {
           console.log('Syncing video state mismatch:', { actualTrackEnabled, expectedVideoOff });
           videoTrack.enabled = !expectedVideoOff;
-          
+
           // Emit state change to ensure remote peers are updated
           if (roomId) {
             socket.emit('videoStateChange', {
@@ -1356,12 +1538,13 @@ const VideoChat = () => {
   // Add a retry button to the error container
 
   const ErrorContainer = ({ error, onRetry, onDismiss }) => (
-    <div className="error-container">
-      <h2>Error</h2>
-      <p>{error}</p>
-      <div className="error-buttons">
-        <button onClick={onRetry}>Try Again</button>
-        <button onClick={onDismiss}>Continue Without Camera</button>
+    <div className="error-container" style={{ background: '#fff3cd', color: '#856404', border: '1px solid #ffeeba', borderRadius: 8, padding: 24, margin: 24, textAlign: 'center', maxWidth: 400, marginLeft: 'auto', marginRight: 'auto' }}>
+      <span className="material-symbols-outlined" style={{ fontSize: 48, color: '#856404' }}>error</span>
+      <h2 style={{ margin: '16px 0 8px 0' }}>Something went wrong</h2>
+      <p style={{ marginBottom: 16 }}>{error}</p>
+      <div className="error-buttons" style={{ display: 'flex', justifyContent: 'center', gap: 16 }}>
+        <button onClick={onRetry} style={{ background: '#28a745', color: 'white', border: 'none', borderRadius: 4, padding: '8px 16px', fontWeight: 'bold', cursor: 'pointer' }}>Try Again</button>
+        <button onClick={onDismiss} style={{ background: '#6c757d', color: 'white', border: 'none', borderRadius: 4, padding: '8px 16px', fontWeight: 'bold', cursor: 'pointer' }}>Continue Without Camera</button>
       </div>
     </div>
   );
@@ -1458,127 +1641,127 @@ const VideoChat = () => {
               <p>Camera turned off</p>
             </div>
           ) : (
-                         <video
-               key={`video-${streamInfo.userId}-${Date.now()}`}
-               data-user-id={streamInfo.userId}
-               autoPlay
-               playsInline
-               muted={false}
-               ref={(el) => {
-                 if (el && streamInfo.stream) {
-                   // Always set srcObject to ensure it's current
-                   el.srcObject = streamInfo.stream;
-                   console.log(`Video ${streamInfo.userId} loaded`);
-                   
-                   // Check if stream has tracks
-                   const tracks = streamInfo.stream.getTracks();
-                   console.log(`Stream tracks for ${streamInfo.userId}:`, tracks.map(t => ({ kind: t.kind, enabled: t.enabled, readyState: t.readyState })));
-                   
-                   // Force enable video tracks
-                   tracks.forEach(track => {
-                     if (track.kind === 'video' && !track.enabled && track.readyState === 'live') {
-                       console.log(`Force enabling video track for ${streamInfo.userId}`);
-                       track.enabled = true;
-                     }
-                   });
+            <video
+              key={`video-${streamInfo.userId}-${Date.now()}`}
+              data-user-id={streamInfo.userId}
+              autoPlay
+              playsInline
+              muted={false}
+              ref={(el) => {
+                if (el && streamInfo.stream) {
+                  // Always set srcObject to ensure it's current
+                  el.srcObject = streamInfo.stream;
+                  console.log(`Video ${streamInfo.userId} loaded`);
 
-                   // Only set up event handlers if they haven't been set
-                   if (!el._handlersSet) {
-                     el.onloadedmetadata = () => {
-                       console.log(`Video metadata loaded for ${streamInfo.userId}`);
-                       // Force play after metadata is loaded
-                       setTimeout(() => {
-                         if (el.srcObject && el.paused) {
-                           el.play().catch(err => {
-                             if (err.name !== 'AbortError') {
-                               console.warn("Playback error:", err);
-                             }
-                           });
-                         }
-                       }, 100);
-                     };
+                  // Check if stream has tracks
+                  const tracks = streamInfo.stream.getTracks();
+                  console.log(`Stream tracks for ${streamInfo.userId}:`, tracks.map(t => ({ kind: t.kind, enabled: t.enabled, readyState: t.readyState })));
 
-                     el.oncanplay = () => {
-                       console.log(`Video can play for ${streamInfo.userId}`);
-                       // Force play when ready
-                       setTimeout(() => {
-                         if (el.srcObject && el.paused) {
-                           el.play().catch(err => {
-                             if (err.name !== 'AbortError') {
-                               console.warn("Canplay play failed:", err);
-                             }
-                           });
-                         }
-                       }, 100);
-                     };
+                  // Force enable video tracks
+                  tracks.forEach(track => {
+                    if (track.kind === 'video' && !track.enabled && track.readyState === 'live') {
+                      console.log(`Force enabling video track for ${streamInfo.userId}`);
+                      track.enabled = true;
+                    }
+                  });
 
-                     el.onplay = () => {
-                       console.log(`Video started playing for ${streamInfo.userId}`);
-                     };
+                  // Only set up event handlers if they haven't been set
+                  if (!el._handlersSet) {
+                    el.onloadedmetadata = () => {
+                      console.log(`Video metadata loaded for ${streamInfo.userId}`);
+                      // Force play after metadata is loaded
+                      setTimeout(() => {
+                        if (el.srcObject && el.paused) {
+                          el.play().catch(err => {
+                            if (err.name !== 'AbortError') {
+                              console.warn("Playback error:", err);
+                            }
+                          });
+                        }
+                      }, 100);
+                    };
 
-                     el.onerror = (e) => {
-                       console.error(`Video error for ${streamInfo.userId}:`, e);
-                     };
+                    el.oncanplay = () => {
+                      console.log(`Video can play for ${streamInfo.userId}`);
+                      // Force play when ready
+                      setTimeout(() => {
+                        if (el.srcObject && el.paused) {
+                          el.play().catch(err => {
+                            if (err.name !== 'AbortError') {
+                              console.warn("Canplay play failed:", err);
+                            }
+                          });
+                        }
+                      }, 100);
+                    };
 
-                     el.onstalled = () => {
-                       console.warn(`Video stalled for ${streamInfo.userId}`);
-                     };
+                    el.onplay = () => {
+                      console.log(`Video started playing for ${streamInfo.userId}`);
+                    };
 
-                     el.onwaiting = () => {
-                       console.warn(`Video waiting for ${streamInfo.userId}`);
-                       // Add detailed debugging for waiting state
-                       console.log(`Video waiting details for ${streamInfo.userId}:`, {
-                         readyState: el.readyState,
-                         networkState: el.networkState,
-                         paused: el.paused,
-                         currentTime: el.currentTime,
-                         duration: el.duration,
-                         hasSrcObject: !!el.srcObject,
-                         streamActive: el.srcObject?.active,
-                         trackCount: el.srcObject?.getTracks().length,
-                         tracks: el.srcObject?.getTracks().map(t => ({
-                           kind: t.kind,
-                           enabled: t.enabled,
-                           readyState: t.readyState,
-                           muted: t.muted
-                         }))
-                       });
-                       
-                       // Check if this is a remote stream and log connection status
-                       if (streamInfo.userId !== socket?.id) {
-                         const pc = peerConnectionsRef.current[streamInfo.userId];
-                         if (pc) {
-                           console.log(`Peer connection status for ${streamInfo.userId}:`, {
-                             connectionState: pc.connectionState,
-                             iceConnectionState: pc.iceConnectionState,
-                             signalingState: pc.signalingState
-                           });
-                         } else {
-                           console.warn(`No peer connection found for ${streamInfo.userId}`);
-                         }
-                       }
-                     };
+                    el.onerror = (e) => {
+                      console.error(`Video error for ${streamInfo.userId}:`, e);
+                    };
 
-                     el._handlersSet = true;
-                   }
-                   
-                   // Force play immediately if ready
-                   if (el.readyState >= 2) {
-                     setTimeout(() => {
-                       if (el.paused) {
-                         el.play().catch(err => {
-                           if (err.name !== 'AbortError') {
-                             console.warn("Immediate play failed:", err);
-                           }
-                         });
-                       }
-                     }, 100);
-                   }
-                 }
-               }}
-               className="video-item"
-               style={{ transform: 'scaleX(-1)' }}
-             />
+                    el.onstalled = () => {
+                      console.warn(`Video stalled for ${streamInfo.userId}`);
+                    };
+
+                    el.onwaiting = () => {
+                      console.warn(`Video waiting for ${streamInfo.userId}`);
+                      // Add detailed debugging for waiting state
+                      console.log(`Video waiting details for ${streamInfo.userId}:`, {
+                        readyState: el.readyState,
+                        networkState: el.networkState,
+                        paused: el.paused,
+                        currentTime: el.currentTime,
+                        duration: el.duration,
+                        hasSrcObject: !!el.srcObject,
+                        streamActive: el.srcObject?.active,
+                        trackCount: el.srcObject?.getTracks().length,
+                        tracks: el.srcObject?.getTracks().map(t => ({
+                          kind: t.kind,
+                          enabled: t.enabled,
+                          readyState: t.readyState,
+                          muted: t.muted
+                        }))
+                      });
+
+                      // Check if this is a remote stream and log connection status
+                      if (streamInfo.userId !== socket?.id) {
+                        const pc = peerConnectionsRef.current[streamInfo.userId];
+                        if (pc) {
+                          console.log(`Peer connection status for ${streamInfo.userId}:`, {
+                            connectionState: pc.connectionState,
+                            iceConnectionState: pc.iceConnectionState,
+                            signalingState: pc.signalingState
+                          });
+                        } else {
+                          console.warn(`No peer connection found for ${streamInfo.userId}`);
+                        }
+                      }
+                    };
+
+                    el._handlersSet = true;
+                  }
+
+                  // Force play immediately if ready
+                  if (el.readyState >= 2) {
+                    setTimeout(() => {
+                      if (el.paused) {
+                        el.play().catch(err => {
+                          if (err.name !== 'AbortError') {
+                            console.warn("Immediate play failed:", err);
+                          }
+                        });
+                      }
+                    }, 100);
+                  }
+                }
+              }}
+              className="video-item"
+              style={{ transform: 'scaleX(-1)' }}
+            />
           )}
           <div className="participant-name">{username}</div>
         </div>
@@ -1600,13 +1783,13 @@ const VideoChat = () => {
       if (!socket.connected) {
         console.warn('Socket disconnected, attempting to reconnect...');
         setConnectionStatus('disconnected');
-        
+
         // Try to reconnect if not already attempting
         if (!socket.connected && !socket.connecting) {
           console.log('Manually attempting socket reconnection...');
           socket.connect();
         }
-        
+
         // Set error message for user feedback
         setError('Connection lost. Attempting to reconnect...');
       } else {
@@ -1618,7 +1801,7 @@ const VideoChat = () => {
 
     // Check connection status immediately
     checkSocketConnection();
-    
+
     // Check less frequently to reduce console spam
     const interval = setInterval(checkSocketConnection, 5000);
     return () => clearInterval(interval);
@@ -1696,7 +1879,7 @@ const VideoChat = () => {
             }
           });
         }
-        
+
         // Force enable video tracks for remote videos
         if (video.srcObject && video.dataset.userId) {
           const stream = video.srcObject;
@@ -1708,7 +1891,7 @@ const VideoChat = () => {
             }
           });
         }
-        
+
         // Debug video element status
         if (video.srcObject) {
           const stream = video.srcObject;
@@ -1735,6 +1918,19 @@ const VideoChat = () => {
       clearInterval(playInterval);
     };
   }, []);
+
+  // Ensure local video element always has the stream set
+  useEffect(() => {
+    if (localVideoRef.current && localStreamRef.current) {
+      localVideoRef.current.srcObject = localStreamRef.current;
+
+      localVideoRef.current.play().catch((err) => {
+        console.warn('Autoplay failed:', err);
+      });
+
+      console.log("✅ Assigned local stream to local video in useEffect");
+    }
+  }, [localStreamRef.current]);
 
   // Update cleanup function
   const cleanupPeerConnection = (userId) => {
@@ -1775,7 +1971,61 @@ const VideoChat = () => {
     }
   };
 
+  // Host: Approve/Deny join request
+  const handleApproveJoin = (roomId, socketId) => {
+    socket.emit('approveJoin', { roomId, socketId });
+    setPendingRequests(prev => prev.filter(r => r.socketId !== socketId));
+  };
+  const handleDenyJoin = (roomId, socketId) => {
+    socket.emit('denyJoin', { roomId, socketId });
+    setPendingRequests(prev => prev.filter(r => r.socketId !== socketId));
+  };
 
+  // Deep debugging for local video element and stream
+  useEffect(() => {
+    const videoEl = localVideoRef.current;
+    const stream = localStreamRef.current;
+    console.log('=== LOCAL VIDEO DEBUG ===');
+    if (!videoEl) {
+      console.warn('Local video element is null');
+      return;
+    }
+    if (!stream) {
+      console.warn('Local stream is null');
+      return;
+    }
+    const videoTracks = stream.getVideoTracks();
+    console.log('Local stream video tracks:', videoTracks.length);
+    videoTracks.forEach((track, i) => {
+      console.log(`Track ${i}:`, {
+        id: track.id,
+        kind: track.kind,
+        enabled: track.enabled,
+        readyState: track.readyState,
+        muted: track.muted
+      });
+    });
+    if (videoTracks.length > 1) {
+      console.warn('More than one video track in localStreamRef.current! This can cause preview issues.');
+    }
+    console.log('Local video element srcObject:', videoEl.srcObject === stream ? 'CORRECT' : videoEl.srcObject);
+    console.log('Video element readyState:', videoEl.readyState, 'paused:', videoEl.paused, 'currentTime:', videoEl.currentTime);
+    // Force srcObject and play
+    if (videoEl.srcObject !== stream) {
+      videoEl.srcObject = stream;
+      console.log('Set local video element srcObject to localStreamRef.current');
+    }
+    if (videoEl.paused) {
+      videoEl.play().then(() => {
+        console.log('Forced local video play()');
+      }).catch(err => {
+        if (err.name !== 'AbortError') {
+          console.warn('Forced play failed:', err);
+        }
+      });
+    }
+    console.log('=== END LOCAL VIDEO DEBUG ===');
+  }, [localStreamRef.current, localVideoKey, isJoined]);
 
   // Render functions
   if (error) {
@@ -1802,20 +2052,45 @@ const VideoChat = () => {
   }
 
   if (!isJoined) {
-    return <RoomJoin onJoinRoom={joinRoom} onCreateRoom={createRoom} />;
+    if (joinPending) {
+      return (
+        <div className="waiting-approval">
+          <h2>Waiting for host approval...</h2>
+          <p>Your request to join the room has been sent. Please wait for the host to approve.</p>
+        </div>
+      );
+    }
+    if (joinDenied) {
+      return (
+        <div className="join-denied">
+          <h2>Join Request Denied</h2>
+          <p>Your request to join the room was denied by the host.</p>
+          <button onClick={() => setJoinDenied(false)}>Try Again</button>
+        </div>
+      );
+    }
+    return <RoomJoin
+      onJoinRoom={joinRoom}
+      onCreateRoom={createRoom}
+      joinPending={joinPending}
+      joinDenied={joinDenied}
+      onRetry={() => setJoinDenied(false)}
+    />;
   }
   const renderLocalVideo = () => {
+    console.log("🧪 renderLocalVideo() called");
+    console.log("🟢 localStreamRef.current =", localStreamRef.current);
     if (videoError) return <div className="video-error">Camera not available</div>;
     if (isVideoOff) return <div className="video-error">Camera turned off</div>;
-    
-    // Ensure we have a local stream
+
     if (!localStreamRef.current) {
-      console.log('No local stream available for rendering');
+      console.log('❌ No local stream available for rendering');
       return <div className="video-error">No camera stream</div>;
     }
-    
+    console.log('✅ Rendering local video element');
     return (
       <video
+        key={localVideoKey}
         ref={localVideoRef}
         autoPlay
         playsInline
@@ -1823,10 +2098,10 @@ const VideoChat = () => {
         className="video-item local"
         style={{ transform: 'scaleX(-1)', objectFit: 'cover' }}
         onLoadedMetadata={(e) => {
-          console.log('Local video metadata loaded');
-          // Set srcObject if not already set
+          console.log('🎯 Local video metadata loaded');
           if (!e.target.srcObject && localStreamRef.current) {
             e.target.srcObject = localStreamRef.current;
+            console.log('👍Assigned localStreamRef.current to local video element after reacquire');
           }
           if (e.target.srcObject && e.target.paused) {
             e.target.play().catch(err => {
@@ -1838,7 +2113,6 @@ const VideoChat = () => {
         }}
         onCanPlay={(e) => {
           console.log('Local video can play');
-          // Set srcObject if not already set
           if (!e.target.srcObject && localStreamRef.current) {
             e.target.srcObject = localStreamRef.current;
           }
@@ -1861,9 +2135,25 @@ const VideoChat = () => {
     );
   };
 
+
+
   return (
     <div className="container">
       {showParticipants && renderParticipantList()}
+      {isHost && pendingRequests.length > 0 && (
+        <div className="pending-requests-panel">
+          <h3>Pending Join Requests</h3>
+          <ul>
+            {pendingRequests.map(req => (
+              <li key={req.socketId}>
+                <span>{req.username || req.socketId}</span>
+                <button onClick={() => handleApproveJoin(req.roomId, req.socketId)}>Approve</button>
+                <button onClick={() => handleDenyJoin(req.roomId, req.socketId)}>Deny</button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <ConnectionStatus
         status={connectionStatus}
         roomId={roomId}
@@ -1924,52 +2214,52 @@ const VideoChat = () => {
               <span className="material-symbols-outlined">logout</span>
             </button>
           )}
-                     <button
-             onClick={() => setShowParticipants(!showParticipants)}
-             className="participant-toggle"
-           >
-             <span className="material-symbols-outlined">
-               {showParticipants ? 'person_off' : 'people'}
-             </span>
-           </button>
-           <button
-             onClick={() => {
-               console.log('=== MANUAL CALL INITIATION ===');
-               // Try to initiate calls with all participants
-               participants.forEach(participant => {
-                 if (participant.id !== socket?.id) {
-                   console.log('Manually initiating call with:', participant.id);
-                   initiateCall(participant.id);
-                 }
-               });
-               console.log('=== END MANUAL CALL INITIATION ===');
-             }}
-             className="debug-button"
-             style={{ backgroundColor: '#28a745', color: 'white' }}
-           >
-             Force Call
-           </button>
-           <button
-             onClick={() => {
-               console.log('=== MANUAL SOCKET RECONNECTION ===');
-               if (socket) {
-                 if (socket.connected) {
-                   console.log('Socket is already connected');
-                 } else {
-                   console.log('Attempting manual socket reconnection...');
-                   socket.connect();
-                 }
-               } else {
-                 console.error('No socket instance available');
-               }
-               console.log('=== END SOCKET RECONNECTION ===');
-             }}
-             className="debug-button"
-             style={{ backgroundColor: '#ffc107', color: 'black' }}
-           >
-             Reconnect
-           </button>
-           <button
+          <button
+            onClick={() => setShowParticipants(!showParticipants)}
+            className="participant-toggle"
+          >
+            <span className="material-symbols-outlined">
+              {showParticipants ? 'person_off' : 'people'}
+            </span>
+          </button>
+          <button
+            onClick={() => {
+              console.log('=== MANUAL CALL INITIATION ===');
+              // Try to initiate calls with all participants
+              participants.forEach(participant => {
+                if (participant.id !== socket?.id) {
+                  console.log('Manually initiating call with:', participant.id);
+                  initiateCall(participant.id);
+                }
+              });
+              console.log('=== END MANUAL CALL INITIATION ===');
+            }}
+            className="debug-button"
+            style={{ backgroundColor: '#28a745', color: 'white' }}
+          >
+            Force Call
+          </button>
+          <button
+            onClick={() => {
+              console.log('=== MANUAL SOCKET RECONNECTION ===');
+              if (socket) {
+                if (socket.connected) {
+                  console.log('Socket is already connected');
+                } else {
+                  console.log('Attempting manual socket reconnection...');
+                  socket.connect();
+                }
+              } else {
+                console.error('No socket instance available');
+              }
+              console.log('=== END SOCKET RECONNECTION ===');
+            }}
+            className="debug-button"
+            style={{ backgroundColor: '#ffc107', color: 'black' }}
+          >
+            Reconnect
+          </button>
+          {/* <button
              onClick={() => {
                console.log('=== CONNECTION STATUS DEBUG ===');
                console.log('Room ID:', roomId);
@@ -2010,135 +2300,135 @@ const VideoChat = () => {
              style={{ backgroundColor: '#17a2b8', color: 'white' }}
            >
              Status
-           </button>
-           <button
-             onClick={() => {
-               console.log('=== MANUAL VIDEO TEST ===');
-               
-               // Check local stream directly
-               if (localStreamRef.current) {
-                 const videoTrack = localStreamRef.current.getVideoTracks()[0];
-                 if (videoTrack) {
-                   console.log('Local video track status:', {
-                     enabled: videoTrack.enabled,
-                     readyState: videoTrack.readyState,
-                     id: videoTrack.id,
-                     kind: videoTrack.kind,
-                     muted: videoTrack.muted
-                   });
-                   
-                   // Force fix if needed
-                   if (!videoTrack.enabled && videoTrack.readyState === 'live') {
-                     console.log('Force fixing local video track');
-                     videoTrack.enabled = true;
-                     setIsVideoOff(false);
-                   }
-                 }
-               }
-               
-               const videos = document.querySelectorAll('video');
-               videos.forEach((video, index) => {
-                 console.log(`Video ${index}:`, {
-                   srcObject: !!video.srcObject,
-                   paused: video.paused,
-                   readyState: video.readyState,
-                   userId: video.dataset.userId || 'local'
-                 });
-                 if (video.srcObject) {
-                   const stream = video.srcObject;
-                   const tracks = stream.getTracks();
-                   console.log(`Stream tracks:`, tracks.map(t => ({
-                     kind: t.kind,
-                     enabled: t.enabled,
-                     readyState: t.readyState,
-                     id: t.id,
-                     muted: t.muted
-                   })));
-                   
-                   // Force enable all video tracks
-                   tracks.forEach(track => {
-                     if (track.kind === 'video' && !track.enabled && track.readyState === 'live') {
-                       console.log(`Force enabling video track for ${video.dataset.userId || 'local'}`);
-                       track.enabled = true;
-                     }
-                   });
-                   
-                   // Force play video
-                   if (video.paused) {
-                     video.play().catch(err => {
-                       if (err.name !== 'AbortError') {
-                         console.warn('Force play failed:', err);
-                       }
-                     });
-                   }
-                 }
-               });
-               console.log('=== END TEST ===');
-               
-               // Additional video toggle debugging
-               console.log('=== VIDEO TOGGLE DEBUG ===');
-               console.log('Local video state:', { isVideoOff });
-               console.log('Remote video states:', remoteVideoStates);
-               console.log('Peer connections:', Object.keys(peerConnectionsRef.current));
-               
-               // Check if video state change events are working
-               if (localStreamRef.current) {
-                 const videoTrack = localStreamRef.current.getVideoTracks()[0];
-                 console.log('Current video track state:', {
-                   enabled: videoTrack?.enabled,
-                   readyState: videoTrack?.readyState,
-                   muted: videoTrack?.muted
-                 });
-               }
-               
-               // Test video state change emission
-               console.log('Testing video state change emission...');
-               socket.emit('videoStateChange', {
-                 roomId,
-                 isVideoOff: !isVideoOff
-               });
-               console.log('=== END VIDEO TOGGLE DEBUG ===');
-               
-               // Test video toggle functionality
-               console.log('=== TESTING VIDEO TOGGLE ===');
-               if (localStreamRef.current) {
-                 const videoTracks = localStreamRef.current.getVideoTracks();
-                 const currentState = videoTracks[0]?.enabled;
-                 console.log('Current video track enabled:', currentState);
-                 
-                 // Toggle video track
-                 videoTracks.forEach(track => {
-                   track.enabled = !currentState;
-                 });
-                 
-                 console.log('Video track toggled to:', !currentState);
-                 
-                 // Replace track in peer connections
-                 Object.values(peerConnectionsRef.current).forEach(peerConnection => {
-                   const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
-                   if (sender && videoTracks[0]) {
-                     console.log('Replacing video track in peer connection for test');
-                     sender.replaceTrack(videoTracks[0]).catch(err => {
-                       console.error('Test track replacement failed:', err);
-                     });
-                   }
-                 });
-                 
-                 // Emit state change
-                 socket.emit('videoStateChange', {
-                   roomId,
-                   isVideoOff: currentState
-                 });
-                 
-                 console.log('Video state change emitted');
-               }
-               console.log('=== END TESTING VIDEO TOGGLE ===');
-             }}
-             className="debug-button"
-             style={{ backgroundColor: '#ff6b6b', color: 'white' }}
-           >
-             Debug
-           </button>
+           </button> */}
+          <button
+            onClick={() => {
+              console.log('=== MANUAL VIDEO TEST ===');
+
+              // Check local stream directly
+              if (localStreamRef.current) {
+                const videoTrack = localStreamRef.current.getVideoTracks()[0];
+                if (videoTrack) {
+                  console.log('Local video track status:', {
+                    enabled: videoTrack.enabled,
+                    readyState: videoTrack.readyState,
+                    id: videoTrack.id,
+                    kind: videoTrack.kind,
+                    muted: videoTrack.muted
+                  });
+
+                  // Force fix if needed
+                  if (!videoTrack.enabled && videoTrack.readyState === 'live') {
+                    console.log('Force fixing local video track');
+                    videoTrack.enabled = true;
+                    setIsVideoOff(false);
+                  }
+                }
+              }
+
+              const videos = document.querySelectorAll('video');
+              videos.forEach((video, index) => {
+                console.log(`Video ${index}:`, {
+                  srcObject: !!video.srcObject,
+                  paused: video.paused,
+                  readyState: video.readyState,
+                  userId: video.dataset.userId || 'local'
+                });
+                if (video.srcObject) {
+                  const stream = video.srcObject;
+                  const tracks = stream.getTracks();
+                  console.log(`Stream tracks:`, tracks.map(t => ({
+                    kind: t.kind,
+                    enabled: t.enabled,
+                    readyState: t.readyState,
+                    id: t.id,
+                    muted: t.muted
+                  })));
+
+                  // Force enable all video tracks
+                  tracks.forEach(track => {
+                    if (track.kind === 'video' && !track.enabled && track.readyState === 'live') {
+                      console.log(`Force enabling video track for ${video.dataset.userId || 'local'}`);
+                      track.enabled = true;
+                    }
+                  });
+
+                  // Force play video
+                  if (video.paused) {
+                    video.play().catch(err => {
+                      if (err.name !== 'AbortError') {
+                        console.warn('Force play failed:', err);
+                      }
+                    });
+                  }
+                }
+              });
+              console.log('=== END TEST ===');
+
+              // Additional video toggle debugging
+              console.log('=== VIDEO TOGGLE DEBUG ===');
+              console.log('Local video state:', { isVideoOff });
+              console.log('Remote video states:', remoteVideoStates);
+              console.log('Peer connections:', Object.keys(peerConnectionsRef.current));
+
+              // Check if video state change events are working
+              if (localStreamRef.current) {
+                const videoTrack = localStreamRef.current.getVideoTracks()[0];
+                console.log('Current video track state:', {
+                  enabled: videoTrack?.enabled,
+                  readyState: videoTrack?.readyState,
+                  muted: videoTrack?.muted
+                });
+              }
+
+              // Test video state change emission
+              console.log('Testing video state change emission...');
+              socket.emit('videoStateChange', {
+                roomId,
+                isVideoOff: !isVideoOff
+              });
+              console.log('=== END VIDEO TOGGLE DEBUG ===');
+
+              // Test video toggle functionality
+              console.log('=== TESTING VIDEO TOGGLE ===');
+              if (localStreamRef.current) {
+                const videoTracks = localStreamRef.current.getVideoTracks();
+                const currentState = videoTracks[0]?.enabled;
+                console.log('Current video track enabled:', currentState);
+
+                // Toggle video track
+                videoTracks.forEach(track => {
+                  track.enabled = !currentState;
+                });
+
+                console.log('Video track toggled to:', !currentState);
+
+                // Replace track in peer connections
+                Object.values(peerConnectionsRef.current).forEach(peerConnection => {
+                  const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+                  if (sender && videoTracks[0]) {
+                    console.log('Replacing video track in peer connection for test');
+                    sender.replaceTrack(videoTracks[0]).catch(err => {
+                      console.error('Test track replacement failed:', err);
+                    });
+                  }
+                });
+
+                // Emit state change
+                socket.emit('videoStateChange', {
+                  roomId,
+                  isVideoOff: currentState
+                });
+
+                console.log('Video state change emitted');
+              }
+              console.log('=== END TESTING VIDEO TOGGLE ===');
+            }}
+            className="debug-button"
+            style={{ backgroundColor: '#ff6b6b', color: 'white' }}
+          >
+            Debug
+          </button>
         </div>
       </div>
       <div className="message-wrapper">
