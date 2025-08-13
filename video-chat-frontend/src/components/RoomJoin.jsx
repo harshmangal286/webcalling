@@ -1,99 +1,115 @@
-import  { useState } from 'react';
+import { useState } from 'react';
 import PropTypes from 'prop-types';
 import '../styles/RoomJoin.css';
 
-const RoomJoin = ({ onJoinRoom, onCreateRoom, joinPending, joinDenied, onRetry }) => {
-    const [roomId, setRoomId] = useState('');
-    const [username, setUsername] = useState('');
-    const [isCreating, setIsCreating] = useState(false);
+const RoomJoin = ({
+  onJoinRoom,
+  onCreateRoom,
 
-    const handleSubmit = (e) => {
-        e.preventDefault();
-        const finalUsername = username.trim() || `User_${Math.floor(Math.random() * 1000)}`;
-        
-        if (isCreating) {
-            console.log('Creating room with username:', finalUsername);
-            onCreateRoom(finalUsername);
-        } else {
-            const finalRoomId = roomId.trim();
-            if (!finalRoomId) {
-                alert('Please enter a Room ID to join');
-                return;
-            }
-            console.log('Joining room:', { roomId: finalRoomId, username: finalUsername });
-            onJoinRoom(finalRoomId, finalUsername);
-        }
-    };
+  pendingRequests = [], // array of {id, username}
+  onApproveJoin,
+  onDenyJoin,
+}) => {
+  const [roomId, setRoomId] = useState('');
+  const [username, setUsername] = useState('');
+  const [isCreating, setIsCreating] = useState(false);
 
-    if (joinPending) {
-        return (
-            <div className="waiting-approval">
-                <h2>Waiting for host approval...</h2>
-                <p>Your request to join the room has been sent. Please wait for the host to approve.</p>
-            </div>
-        );
+  const handleUsernameChange = (e) => {
+    let value = e.target.value.replace(/\s+/g, '');
+    if (value.length > 15) value = value.slice(0, 15);
+    setUsername(value);
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    const finalUsername = username.trim();
+    if (!finalUsername) return alert('Username is required');
+
+    if (isCreating) {
+      onCreateRoom(finalUsername);
+    } else {
+      const finalRoomId = roomId.trim();
+      if (!finalRoomId) return alert('Please enter a Room ID to join');
+      onJoinRoom(finalRoomId, finalUsername);
     }
-    if (joinDenied) {
-        return (
-            <div className="join-denied">
-                <h2>Join Request Denied</h2>
-                <p>Your request to join the room was denied by the host.</p>
-                <button onClick={onRetry}>Try Again</button>
-            </div>
-        );
-    }
+  };
 
-    return (
-        <div className="room-join-container">
-            <div className="room-join-card">
-                <h2>{isCreating ? 'Create Room' : 'Join Room'}</h2>
-                <form onSubmit={handleSubmit}>
-                    {!isCreating && (
-                        <div className="input-group">
-                            <label htmlFor="room-id">Room ID</label>
-                            <input
-                                id="room-id"
-                                type="text"
-                                value={roomId}
-                                onChange={(e) => setRoomId(e.target.value)}
-                                placeholder="Enter Room ID"
-                                required={!isCreating}
-                                disabled={joinPending}
-                            />
-                        </div>
-                    )}
-                    <div className="input-group">
-                        <label htmlFor="username">Username (optional)</label>
-                        <input
-                            id="username"
-                            type="text"
-                            value={username}
-                            onChange={(e) => setUsername(e.target.value)}
-                            placeholder="Enter username"
-                            disabled={joinPending}
-                        />
-                    </div>
-                    <button type="submit" className="brutalist-button" disabled={joinPending}>
-                        {isCreating ? 'Create Room' : 'Join Room'}
-                    </button>
-                </form>
-                <button 
-                    className="toggle-mode brutalist-button" 
-                    onClick={() => setIsCreating(!isCreating)}
-                    disabled={joinPending}
+  return (
+    <div className="room-join-container">
+      <div className="room-join-card">
+        <h2>{isCreating ? 'Create Room' : 'Join Room'}</h2>
+        <form onSubmit={handleSubmit} className="join-form">
+          {!isCreating && (
+            <div className="input-group">
+              <label htmlFor="room-id">Room ID</label>
+              <input
+                id="room-id"
+                type="text"
+                value={roomId}
+                onChange={(e) => setRoomId(e.target.value)}
+                placeholder="Enter Room ID"
+              />
+            </div>
+          )}
+          <div className="input-group">
+            <label htmlFor="username">Username</label>
+            <input
+              id="username"
+              type="text"
+              value={username}
+              onChange={handleUsernameChange}
+              placeholder="Max 15 chars, no spaces"
+            />
+          </div>
+          <button type="submit" className="brutalist-button">
+            {isCreating ? 'Create Room' : 'Join Room'}
+          </button>
+        </form>
+        <button
+          className="toggle-mode brutalist-button"
+          onClick={() => setIsCreating(!isCreating)}
+        >
+          {isCreating ? 'Join Existing Room' : 'Create New Room'}
+        </button>
+      </div>
+
+      {/* Host Approval Stack on Left Side */}
+      {pendingRequests.length > 0 && (
+        <div className="approval-stack-overlay">
+          {pendingRequests.map((req) => (
+            <div key={req.id} className="approval-card">
+              <h3>{req.username} wants to join</h3>
+              <div className="approval-buttons">
+                <button
+                  className="approve-button"
+                  onClick={() => onApproveJoin(req.id)}
                 >
-                    {isCreating ? 'Join Existing Room' : 'Create New Room'}
+                  Approve
                 </button>
+                <button
+                  className="deny-button"
+                  onClick={() => onDenyJoin(req.id)}
+                >
+                  Deny
+                </button>
+              </div>
             </div>
+          ))}
         </div>
-    );
-};
-RoomJoin.propTypes = {
-    onJoinRoom: PropTypes.func.isRequired,
-    onCreateRoom: PropTypes.func.isRequired,
-    joinPending: PropTypes.bool,
-    joinDenied: PropTypes.bool,
-    onRetry: PropTypes.func,
+      )}
+    </div>
+  );
 };
 
-export default RoomJoin; 
+RoomJoin.propTypes = {
+  onJoinRoom: PropTypes.func.isRequired,
+  onCreateRoom: PropTypes.func.isRequired,
+  joinPending: PropTypes.bool,
+  joinDenied: PropTypes.bool,
+  onRetry: PropTypes.func,
+  pendingRequests: PropTypes.array,
+  onApproveJoin: PropTypes.func,
+  onDenyJoin: PropTypes.func,
+};
+
+export default RoomJoin;

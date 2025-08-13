@@ -13,7 +13,8 @@ const io = socketIO(server, {
             "http://localhost:5173",
             "http://localhost:3000",
             "https://webcall1.netlify.app",
-            "https://webcall.netlify.app"
+            "https://webcall.netlify.app",
+            "https://krvow.netlify.app"
         ],
         methods: ["GET", "POST"],
         credentials: true

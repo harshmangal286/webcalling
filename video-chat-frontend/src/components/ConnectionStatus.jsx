@@ -1,32 +1,38 @@
+import PropTypes from "prop-types";
+import "../styles/ConnectionStatus.css";
+const ConnectionStatus = ({ status, roomId, isHost }) => {
+  const statusColors = {
+    Connected: "#4CAF50",
+    Connecting: "#FFC107",
+    disconnected: "#F44336",
+    default: "#9E9E9E",
+  };
+  
+  const getStatusColor = () => statusColors[status] || statusColors.default;
 
-import PropTypes from 'prop-types';
-
-const ConnectionStatus = ({ status, roomId, isHost, }) => {
-  const getStatusColor = () => {
-    switch (status) {
-      case 'connected': return '#4CAF50';
-      case 'connecting': return '#FFC107';
-      case 'disconnected': return '#F44336';
-      default: return '#9E9E9E';
-    }
+  const handleShareRoom = () => {
+    navigator.clipboard.writeText(window.location.href);
+    alert("Room link copied to clipboard!");
   };
 
   return (
-    <div className="connection-status" style={{ backgroundColor: getStatusColor() }}>
+    <div
+      className="connection-status"
+      style={{ borderLeft: `6px solid ${getStatusColor()}` }}
+    >
       <div className="status-content">
-        <span className="status-text">{status}</span>
+        {/* Status Badge */}
+        <span className="status-badge" style={{ backgroundColor: getStatusColor() }}>
+          {status}
+        </span>
+
+        {/* Room Info */}
         {roomId && (
           <div className="room-info">
-            <span>Room: {roomId}</span>
-            <span className="host-badge">{isHost ? 'Host' : 'Participant'}</span>
-            <button
-              className="share-button"
-              onClick={() => {
-                navigator.clipboard.writeText(window.location.href);
-                alert('Room link copied to clipboard!');
-              }}
-            >
-              Share Room
+            <span className="room-id">Room: {roomId}</span>
+            <span className="host-badge">{isHost ? "Host" : "Participant"}</span>
+            <button className="share-button" onClick={handleShareRoom}>
+              📋 Share
             </button>
           </div>
         )}
@@ -39,7 +45,6 @@ ConnectionStatus.propTypes = {
   status: PropTypes.string.isRequired,
   roomId: PropTypes.string,
   isHost: PropTypes.bool,
-  mediaStatus: PropTypes.string, // ✅ added
 };
 
 export default ConnectionStatus;

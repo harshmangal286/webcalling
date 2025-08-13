@@ -1,0 +1,60 @@
+.connection-status {
+  background: rgba(20, 20, 20, 0.85);
+  color: rgb(255, 255, 255);
+  padding: 10px 15px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+.status-content {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.status-badge {
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-weight: bold;
+  font-size: 19px;
+  text-transform: capitalize;
+  color: white;
+}
+
+.room-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.room-id {
+  font-weight: 500;
+}
+
+.host-badge {
+  background: gold;
+  color: black;
+  padding: 3px 8px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.share-button {
+  background: #1e88e5;
+  color: white;
+  border: none;
+  padding: 5px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.share-button:hover {
+  background: #1565c0;
+}
