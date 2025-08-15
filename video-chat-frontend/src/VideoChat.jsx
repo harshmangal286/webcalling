@@ -18,7 +18,6 @@ const VideoChat = () => {
   // States to manage my video chat
   const [localUserId, setLocalUserId] = useState(null);
   const [localUserName, setLocalUserName] = useState("");
-
   const [remoteStreams, setRemoteStreams] = useState([]);
   // const [isCallStarted, setIsCallStarted] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
@@ -53,7 +52,7 @@ const VideoChat = () => {
   const [pendingRequests, setPendingRequests] = useState([]); // For host
 
   // Add this state
-  const [localVideoKey, setLocalVideoKey] = useState(0);
+  const [localVideoKey] = useState(0);
 
   // Function to get my camera and mic
   // This function should ONLY return the stream or throw error
@@ -70,7 +69,7 @@ const VideoChat = () => {
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: true });
       setLocalStream(stream);
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
@@ -104,11 +103,7 @@ const VideoChat = () => {
 
 
   const getUserMedia = useCallback(async (constraints = {
-    video: {
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
-      facingMode: 'user',
-    },
+    video:true,
     audio: true
   }) => {
     // If we already have an active stream, return it
@@ -219,210 +214,261 @@ const VideoChat = () => {
 
 
 
-  // Setup connection with another user
+  // // Setup connection with another user
+  // const createPeerConnection = useCallback((userId) => {
+  //   try {
+  //     console.log('Creating peer connection for:', userId);
+
+  //     const configuration = {
+  //       iceServers: [
+  //         { urls: 'stun:stun.l.google.com:19302' },
+  //         { urls: 'stun:openrelay.metered.ca:80' },
+  //         {
+  //           urls: 'turn:openrelay.metered.ca:80',
+  //           username: 'openrelayproject',
+  //           credential: 'openrelayproject',
+  //         },
+  //       ],
+  //       iceCandidatePoolSize: 10
+  //     };
+
+  //     const peerConnection = new RTCPeerConnection(configuration);
+
+  //     // Add connection state logging
+  //     peerConnection.onsignalingstatechange = () => {
+  //       console.log(`Signaling state (${userId}):`, peerConnection.signalingState);
+  //     };
+
+  //     // Improved track handling
+  //     peerConnection.ontrack = (event) => {
+  //       console.log("[ontrack] fired from user:", userId, "Streams:", event.streams);
+  //       console.log("ontrack event details:", {
+  //         track: event.track,
+  //         streams: event.streams,
+  //         trackKind: event.track?.kind,
+  //         trackEnabled: event.track?.enabled,
+  //         trackReadyState: event.track?.readyState
+  //       });
+
+  //       if (!event.streams || !event.streams[0]) {
+  //         console.warn("Received ontrack without stream");
+  //         return;
+  //       }
+
+  //       const [newStream] = event.streams;
+  //       if (!newStream) {
+  //         console.warn("No stream found in ontrack event");
+  //         return;
+  //       }
+
+  //       // Don't add our own stream as remote
+  //       if (userId === (localUserId || socket?.id)) {
+  //         console.log("Ignoring own stream in ontrack");
+  //         return;
+  //       }
+
+  //       // Log stream details
+  //       const tracks = newStream.getTracks();
+  //       console.log(`Stream received from ${userId}:`, {
+  //         trackCount: tracks.length,
+  //         tracks: tracks.map(t => ({
+  //           kind: t.kind,
+  //           enabled: t.enabled,
+  //           readyState: t.readyState,
+  //           id: t.id
+  //         }))
+  //       });
+
+  //       setRemoteStreams(prevStreams => {
+  //         const exists = prevStreams.find(s => s.userId === userId);
+  //         const updatedStreams = exists
+  //           ? prevStreams.map(s => s.userId === userId ? { ...s, stream: newStream } : s)
+  //           : [...prevStreams, { userId, stream: newStream }];
+  //         console.log('[ontrack] remoteStreams after update:', updatedStreams);
+  //         return updatedStreams;
+  //       });
+
+  //       // Set track.onended for cleanup and ensure tracks are enabled
+  //       newStream.getTracks().forEach(track => {
+  //         // Ensure track is enabled
+  //         if (!track.enabled && track.readyState === 'live') {
+  //           console.log(`Enabling ${track.kind} track for user ${userId}`);
+  //           track.enabled = true;
+  //         }
+
+  //         track.onended = () => {
+  //           console.log("Track ended:", track.kind, "for user:", userId);
+  //         };
+  //         track.onmute = () => {
+  //           console.log("Track muted:", track.kind, "for user:", userId);
+  //         };
+  //         track.onunmute = () => {
+  //           console.log("Track unmuted:", track.kind, "for user:", userId);
+  //         };
+
+  //         // Handle track replacement events
+  //         track.onended = () => {
+  //           console.log("Track ended:", track.kind, "for user:", userId);
+  //           // Force refresh remote streams when track ends
+  //           setRemoteStreams(prev => prev.map(s =>
+  //             s.userId === userId ? { ...s, stream: newStream } : s
+  //           ));
+  //         };
+  //       });
+  //     };
+
+  //     peerConnection.oniceconnectionstatechange = () => {
+  //       console.log(`ICE connection state (${userId}):`, peerConnection.iceConnectionState);
+  //       if (peerConnection.iceConnectionState === 'failed') {
+  //         console.log('ICE connection failed, attempting restart...');
+  //         peerConnection.restartIce();
+  //       } else if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
+  //         console.log(`ICE connection established with ${userId}`);
+  //       } else if (peerConnection.iceConnectionState === 'checking') {
+  //         console.log(`ICE connection checking with ${userId}`);
+  //       }
+  //     };
+
+  //     peerConnection.onconnectionstatechange = () => {
+  //       console.log(`Connection state (${userId}):`, peerConnection.connectionState);
+  //       if (peerConnection.connectionState === 'failed') {
+  //         // Handle connection failure inline to avoid circular dependency
+  //         console.log('Handling connection failure for:', userId);
+
+  //         // Clean up failed connection
+  //         if (peerConnectionsRef.current[userId]) {
+  //           peerConnectionsRef.current[userId].close();
+  //           delete peerConnectionsRef.current[userId];
+  //         }
+
+  //         // Remove failed streams
+  //         setRemoteStreams(prev => prev.filter(s => s.userId !== userId));
+  //       } else if (peerConnection.connectionState === 'connected') {
+  //         console.log(`Connection established with ${userId}`);
+  //       } else if (peerConnection.connectionState === 'connecting') {
+  //         console.log(`Connection connecting with ${userId}`);
+  //       }
+  //     };
+
+  //     // Handle ICE candidate generation
+  //     peerConnection.onicecandidate = (event) => {
+  //       if (event.candidate && roomId) {
+  //         console.log('Sending ICE candidate to:', userId);
+  //         console.log("❄️ ICE Candidate:", event.candidate);
+  //         socket.emit('candidate', {
+  //           to: userId,
+  //           candidate: event.candidate,
+  //           roomId
+  //         });
+  //       }
+  //     };
+
+  //     // Add local tracks to the peer connection
+  //     if (localStreamRef.current) {
+  //       const videoTrack = localStreamRef.current.getVideoTracks()[0];
+  //       const audioTrack = localStreamRef.current.getAudioTracks()[0];
+
+  //       console.log('Local stream details:', {
+  //         hasVideoTrack: !!videoTrack,
+  //         hasAudioTrack: !!audioTrack,
+  //         videoTrackEnabled: videoTrack?.enabled,
+  //         audioTrackEnabled: audioTrack?.enabled,
+  //         videoTrackReadyState: videoTrack?.readyState,
+  //         audioTrackReadyState: audioTrack?.readyState
+  //       });
+
+  //       if (videoTrack) {
+  //         // Ensure video track is enabled
+  //         if (!videoTrack.enabled) {
+  //           console.log('Enabling video track before adding to peer connection');
+  //           videoTrack.enabled = true;
+  //         }
+  //         console.log('Adding video track to peer connection');
+  //         const sender = peerConnection.addTrack(videoTrack, localStreamRef.current);
+  //         console.log('Video track sender:', sender);
+  //       }
+  //       if (audioTrack) {
+  //         // Ensure audio track is enabled
+  //         if (!audioTrack.enabled) {
+  //           console.log('Enabling audio track before adding to peer connection');
+  //           audioTrack.enabled = true;
+  //         }
+  //         console.log('Adding audio track to peer connection');
+  //         const sender = peerConnection.addTrack(audioTrack, localStreamRef.current);
+  //         console.log('Audio track sender:', sender);
+  //       }
+  //     } else {
+  //       console.warn('No local stream available for peer connection');
+  //     }
+
+  //     // Store the connection
+  //     peerConnectionsRef.current[userId] = peerConnection;
+
+  //     // Add timeout to restart ICE if connection doesn't establish
+  //     setTimeout(() => {
+  //       if (peerConnection.iceConnectionState === 'new' || peerConnection.iceConnectionState === 'checking') {
+  //         console.log(`ICE connection timeout for ${userId}, restarting ICE...`);
+  //         peerConnection.restartIce();
+  //       }
+  //     }, 10000); // 10 second timeout
+
+  //     return peerConnection;
+  //   } catch (error) {
+  //     console.error('Error creating peer connection:', error);
+  //     throw error;
+  //   }
+  // }, [roomId, localUserId, socket]);
   const createPeerConnection = useCallback((userId) => {
     try {
-      console.log('Creating peer connection for:', userId);
-
-      const configuration = {
+      console.log(`Creating peer connection for user: ${userId}`);
+      const pc = new RTCPeerConnection({
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:openrelay.metered.ca:80' },
+           { urls: 'stun:openrelay.metered.ca:80' },
           {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelayproject',
-            credential: 'openrelayproject',
-          },
-        ],
-        iceCandidatePoolSize: 10
-      };
+             urls: 'turn:openrelay.metered.ca:80',
+             username: 'openrelayproject',
+             credential: 'openrelayproject',
+           },
+         ],
+         iceCandidatePoolSize: 10
+       });
 
-      const peerConnection = new RTCPeerConnection(configuration);
-
-      // Add connection state logging
-      peerConnection.onsignalingstatechange = () => {
-        console.log(`Signaling state (${userId}):`, peerConnection.signalingState);
-      };
-
-      // Improved track handling
-      peerConnection.ontrack = (event) => {
-        console.log("[ontrack] fired from user:", userId, "Streams:", event.streams);
-        console.log("ontrack event details:", {
-          track: event.track,
-          streams: event.streams,
-          trackKind: event.track?.kind,
-          trackEnabled: event.track?.enabled,
-          trackReadyState: event.track?.readyState
-        });
-
-        if (!event.streams || !event.streams[0]) {
-          console.warn("Received ontrack without stream");
-          return;
-        }
-
-        const [newStream] = event.streams;
-        if (!newStream) {
-          console.warn("No stream found in ontrack event");
-          return;
-        }
-
-        // Don't add our own stream as remote
-        if (userId === (localUserId || socket?.id)) {
-          console.log("Ignoring own stream in ontrack");
-          return;
-        }
-
-        // Log stream details
-        const tracks = newStream.getTracks();
-        console.log(`Stream received from ${userId}:`, {
-          trackCount: tracks.length,
-          tracks: tracks.map(t => ({
-            kind: t.kind,
-            enabled: t.enabled,
-            readyState: t.readyState,
-            id: t.id
-          }))
-        });
-
-        setRemoteStreams(prevStreams => {
-          const exists = prevStreams.find(s => s.userId === userId);
-          const updatedStreams = exists
-            ? prevStreams.map(s => s.userId === userId ? { ...s, stream: newStream } : s)
-            : [...prevStreams, { userId, stream: newStream }];
-          console.log('[ontrack] remoteStreams after update:', updatedStreams);
-          return updatedStreams;
-        });
-
-        // Set track.onended for cleanup and ensure tracks are enabled
-        newStream.getTracks().forEach(track => {
-          // Ensure track is enabled
-          if (!track.enabled && track.readyState === 'live') {
-            console.log(`Enabling ${track.kind} track for user ${userId}`);
-            track.enabled = true;
-          }
-
-          track.onended = () => {
-            console.log("Track ended:", track.kind, "for user:", userId);
-          };
-          track.onmute = () => {
-            console.log("Track muted:", track.kind, "for user:", userId);
-          };
-          track.onunmute = () => {
-            console.log("Track unmuted:", track.kind, "for user:", userId);
-          };
-
-          // Handle track replacement events
-          track.onended = () => {
-            console.log("Track ended:", track.kind, "for user:", userId);
-            // Force refresh remote streams when track ends
-            setRemoteStreams(prev => prev.map(s =>
-              s.userId === userId ? { ...s, stream: newStream } : s
-            ));
-          };
-        });
-      };
-
-      peerConnection.oniceconnectionstatechange = () => {
-        console.log(`ICE connection state (${userId}):`, peerConnection.iceConnectionState);
-        if (peerConnection.iceConnectionState === 'failed') {
-          console.log('ICE connection failed, attempting restart...');
-          peerConnection.restartIce();
-        } else if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
-          console.log(`ICE connection established with ${userId}`);
-        } else if (peerConnection.iceConnectionState === 'checking') {
-          console.log(`ICE connection checking with ${userId}`);
-        }
-      };
-
-      peerConnection.onconnectionstatechange = () => {
-        console.log(`Connection state (${userId}):`, peerConnection.connectionState);
-        if (peerConnection.connectionState === 'failed') {
-          // Handle connection failure inline to avoid circular dependency
-          console.log('Handling connection failure for:', userId);
-
-          // Clean up failed connection
-          if (peerConnectionsRef.current[userId]) {
-            peerConnectionsRef.current[userId].close();
-            delete peerConnectionsRef.current[userId];
-          }
-
-          // Remove failed streams
-          setRemoteStreams(prev => prev.filter(s => s.userId !== userId));
-        } else if (peerConnection.connectionState === 'connected') {
-          console.log(`Connection established with ${userId}`);
-        } else if (peerConnection.connectionState === 'connecting') {
-          console.log(`Connection connecting with ${userId}`);
-        }
-      };
-
-      // Handle ICE candidate generation
-      peerConnection.onicecandidate = (event) => {
-        if (event.candidate && roomId) {
-          console.log('Sending ICE candidate to:', userId);
-          console.log("❄️ ICE Candidate:", event.candidate);
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
           socket.emit('candidate', {
             to: userId,
             candidate: event.candidate,
-            roomId
+            roomId,
           });
         }
       };
 
-      // Add local tracks to the peer connection
-      if (localStreamRef.current) {
-        const videoTrack = localStreamRef.current.getVideoTracks()[0];
-        const audioTrack = localStreamRef.current.getAudioTracks()[0];
-
-        console.log('Local stream details:', {
-          hasVideoTrack: !!videoTrack,
-          hasAudioTrack: !!audioTrack,
-          videoTrackEnabled: videoTrack?.enabled,
-          audioTrackEnabled: audioTrack?.enabled,
-          videoTrackReadyState: videoTrack?.readyState,
-          audioTrackReadyState: audioTrack?.readyState
+      pc.ontrack = (event) => {
+        console.log(`Track received from ${userId}`);
+        setRemoteStreams((prev) => {
+          // Avoid adding duplicate streams
+          if (prev.find(s => s.userId === userId)) {
+            return prev;
+          }
+          return [...prev, { userId, stream: event.streams[0] }];
         });
+      };
 
-        if (videoTrack) {
-          // Ensure video track is enabled
-          if (!videoTrack.enabled) {
-            console.log('Enabling video track before adding to peer connection');
-            videoTrack.enabled = true;
-          }
-          console.log('Adding video track to peer connection');
-          const sender = peerConnection.addTrack(videoTrack, localStreamRef.current);
-          console.log('Video track sender:', sender);
-        }
-        if (audioTrack) {
-          // Ensure audio track is enabled
-          if (!audioTrack.enabled) {
-            console.log('Enabling audio track before adding to peer connection');
-            audioTrack.enabled = true;
-          }
-          console.log('Adding audio track to peer connection');
-          const sender = peerConnection.addTrack(audioTrack, localStreamRef.current);
-          console.log('Audio track sender:', sender);
-        }
-      } else {
-        console.warn('No local stream available for peer connection');
+      // Add local tracks if the stream is ready
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(track => {
+          pc.addTrack(track, localStreamRef.current);
+        });
       }
 
-      // Store the connection
-      peerConnectionsRef.current[userId] = peerConnection;
+      peerConnectionsRef.current[userId] = pc;
+      return pc;
 
-      // Add timeout to restart ICE if connection doesn't establish
-      setTimeout(() => {
-        if (peerConnection.iceConnectionState === 'new' || peerConnection.iceConnectionState === 'checking') {
-          console.log(`ICE connection timeout for ${userId}, restarting ICE...`);
-          peerConnection.restartIce();
-        }
-      }, 10000); // 10 second timeout
-
-      return peerConnection;
     } catch (error) {
       console.error('Error creating peer connection:', error);
-      throw error;
     }
-  }, [roomId, localUserId, socket]);
+  }, [roomId, socket]);
 
   // Helper function to apply buffered ICE candidates
   const applyBufferedCandidates = useCallback(async (userId, peerConnection, candidatesMap) => {
@@ -647,6 +693,57 @@ const VideoChat = () => {
       }
     });
 
+    // socket.on('roomJoined', ({ roomId, users, isHost }) => {
+    //   console.log('Room joined event received:', { roomId, users, isHost });
+
+    //   if (!roomId || !Array.isArray(users)) {
+    //     console.error('Invalid room data received:', { roomId, users });
+    //     return;
+    //   }
+
+    //   setRoomId(roomId);
+    //   // Also store roomId in socket for backup
+    //   socket.roomId = roomId;
+    //   setIsHost(isHost);
+    //   setParticipants(users.filter(user => user && user.id));
+    //   setConnectionStatus('connected');
+    //   setIsJoined(true);
+    //   clearChat();
+
+    //   // Initialize connections with existing users immediately
+    //   users.forEach((user, index) => {
+    //     if (user && user.id && user.id !== socket.id) {
+    //       console.log('Initializing connection with existing user:', user.id);
+    //       if (!peerConnectionsRef.current[user.id]) {
+    //         // Only the host initiates calls to prevent offer collisions
+    //         if (isHost) {
+    //           // Stagger the call initiation to avoid overwhelming the system
+    //           setTimeout(async () => {
+    //             console.log('Host calling initiateCall for user:', user.id, 'with roomId:', roomId);
+    //             try {
+    //               await initiateCall(user.id);
+    //               console.log('Successfully initiated call with:', user.id);
+    //             } catch (error) {
+    //               console.error('Failed to initiate call with:', user.id, error);
+    //               // Retry once after a delay
+    //               setTimeout(async () => {
+    //                 try {
+    //                   console.log('Retrying call initiation with:', user.id);
+    //                   await initiateCall(user.id);
+    //                 } catch (retryError) {
+    //                   console.error('Retry failed for call initiation with:', user.id, retryError);
+    //                 }
+    //               }, 2000);
+    //             }
+    //           }, 500 + (index * 200)); // Stagger by 200ms per user
+    //         } else {
+    //           console.log('Not host, waiting for host to initiate call with:', user.id);
+    //         }
+    //       }
+    //     }
+    //   });
+    // });
+
     socket.on('roomJoined', ({ roomId, users, isHost }) => {
       console.log('Room joined event received:', { roomId, users, isHost });
 
@@ -656,48 +753,24 @@ const VideoChat = () => {
       }
 
       setRoomId(roomId);
-      // Also store roomId in socket for backup
-      socket.roomId = roomId;
+      socket.roomId = roomId; // Good for backup
       setIsHost(isHost);
       setParticipants(users.filter(user => user && user.id));
       setConnectionStatus('connected');
       setIsJoined(true);
       clearChat();
 
-      // Initialize connections with existing users immediately
-      users.forEach((user, index) => {
+      // Every client will initiate a connection with every other existing client
+      users.forEach(user => {
         if (user && user.id && user.id !== socket.id) {
-          console.log('Initializing connection with existing user:', user.id);
-          if (!peerConnectionsRef.current[user.id]) {
-            // Only the host initiates calls to prevent offer collisions
-            if (isHost) {
-              // Stagger the call initiation to avoid overwhelming the system
-              setTimeout(async () => {
-                console.log('Host calling initiateCall for user:', user.id, 'with roomId:', roomId);
-                try {
-                  await initiateCall(user.id);
-                  console.log('Successfully initiated call with:', user.id);
-                } catch (error) {
-                  console.error('Failed to initiate call with:', user.id, error);
-                  // Retry once after a delay
-                  setTimeout(async () => {
-                    try {
-                      console.log('Retrying call initiation with:', user.id);
-                      await initiateCall(user.id);
-                    } catch (retryError) {
-                      console.error('Retry failed for call initiation with:', user.id, retryError);
-                    }
-                  }, 2000);
-                }
-              }, 500 + (index * 200)); // Stagger by 200ms per user
-            } else {
-              console.log('Not host, waiting for host to initiate call with:', user.id);
-            }
+          // To prevent offer collisions, let the user with the "greater" ID initiate
+          if (socket.id > user.id) {
+            console.log(`Initiating call with existing user: ${user.id}`);
+            initiateCall(user.id);
           }
         }
       });
     });
-
     const pendingCandidates = {}; // userId -> array of ICE candidates
 
     // ---- OFFER handler ----
@@ -986,15 +1059,10 @@ const VideoChat = () => {
       }));
 
       // Only the host initiates calls with new users to prevent offer collisions
-      if (isHost) {
-        console.log('Host initiating call with new user:', user.id);
-        // Small delay to ensure everything is set up
-        setTimeout(() => {
-          initiateCall(user.id);
-        }, 500);
-      } else {
-        console.log('Not host, waiting for host to initiate call with:', user.id);
-      }
+
+      setTimeout(() => {
+        initiateCall(user.id);
+      }, 500);
     });
 
     socket.on('joinPending', () => {
@@ -1043,27 +1111,19 @@ const VideoChat = () => {
 
   // Clean up when I leave or someone else leaves
   const handleUserDisconnected = (userId) => {
-    if (!userId) {
-      console.error('Invalid userId for disconnection');
-      return;
+    console.log(`User disconnected: ${userId}`);
+
+    // Close and remove the peer connection
+    if (peerConnectionsRef.current[userId]) {
+      peerConnectionsRef.current[userId].close();
+      delete peerConnectionsRef.current[userId];
     }
 
-    cleanupPeerConnection(userId);
+    // Remove the remote stream
+    setRemoteStreams(prev => prev.filter(s => s.userId !== userId));
 
-    setRemoteStreams(prev => prev.filter(streamInfo =>
-      streamInfo && streamInfo.userId && streamInfo.userId !== userId
-    ));
-
-    setParticipants(prev => prev.filter(p =>
-      p && p.id && p.id !== userId
-    ));
-
-    setRemoteVideoStates(prev => {
-      if (!prev) return {};
-      const newStates = { ...prev };
-      delete newStates[userId];
-      return newStates;
-    });
+    // Remove the participant from the list
+    setParticipants(prev => prev.filter(p => p.id !== userId));
   };
 
   // My controls for video/audio
@@ -1180,369 +1240,377 @@ const VideoChat = () => {
   // };
   // Add these helper functions inside your VideoChat component
 
-  const reacquireVideoStream = useCallback(async (oldVideoTracks) => {
-    console.log('🔄 Reacquiring video stream...');
+  // const reacquireVideoStream = useCallback(async (oldVideoTracks) => {
+  //   console.log('🔄 Reacquiring video stream...');
 
-    // Clean up old tracks first
-    oldVideoTracks.forEach(track => {
-      try {
-        console.log('Stopping track:', track.id, 'State:', track.readyState);
-        track.stop();
-        if (localStreamRef.current) {
-          localStreamRef.current.removeTrack(track);
-        }
-        console.log('✅ Cleaned up old video track:', track.id);
-      } catch (err) {
-        console.warn('Error cleaning up old video track:', err);
-      }
-    });
+  //   // Clean up old tracks first
+  //   oldVideoTracks.forEach(track => {
+  //     try {
+  //       console.log('Stopping track:', track.id, 'State:', track.readyState);
+  //       track.stop();
+  //       if (localStreamRef.current) {
+  //         localStreamRef.current.removeTrack(track);
+  //       }
+  //       console.log('✅ Cleaned up old video track:', track.id);
+  //     } catch (err) {
+  //       console.warn('Error cleaning up old video track:', err);
+  //     }
+  //   });
 
-    // Clear local video element temporarily
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = null;
-    }
+  //   // Clear local video element temporarily
+  //   if (localVideoRef.current) {
+  //     localVideoRef.current.srcObject = null;
+  //   }
 
-    try {
-      // Get new video stream (video only, preserve existing audio)
-      const constraints = {
-        video: {
-          width: { ideal: 1280, max: 1920 },
-          height: { ideal: 720, max: 1080 },
-          frameRate: { ideal: 30 }
-        },
-        audio: false // Only video for this stream
-      };
+  //   try {
+  //     // Get new video stream (video only, preserve existing audio)
+  //     const constraints = {
+  //       video: {
+  //         width: { ideal: 1280, max: 1920 },
+  //         height: { ideal: 720, max: 1080 },
+  //         frameRate: { ideal: 30 }
+  //       },
+  //       audio: false // Only video for this stream
+  //     };
 
-      console.log('🎥 Requesting new video stream with constraints:', constraints);
-      const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+  //     console.log('🎥 Requesting new video stream with constraints:', constraints);
+  //     const newStream = await navigator.mediaDevices.getUserMedia(constraints);
 
-      const newVideoTrack = newStream.getVideoTracks()[0];
-      if (!newVideoTrack) {
-        throw new Error('No video track in new stream');
-      }
+  //     const newVideoTrack = newStream.getVideoTracks()[0];
+  //     if (!newVideoTrack) {
+  //       throw new Error('No video track in new stream');
+  //     }
 
-      console.log('✅ Got new video track:', newVideoTrack.id, 'State:', newVideoTrack.readyState);
+  //     console.log('✅ Got new video track:', newVideoTrack.id, 'State:', newVideoTrack.readyState);
 
-      // Add new track to existing local stream (preserve audio tracks)
-      if (localStreamRef.current) {
-        localStreamRef.current.addTrack(newVideoTrack);
-        console.log('✅ Added new video track to local stream');
-      } else {
-        // If no local stream exists, create one with audio
-        const audioConstraints = { audio: true, video: false };
-        try {
-          const audioStream = await navigator.mediaDevices.getUserMedia(audioConstraints);
-          const audioTrack = audioStream.getAudioTracks()[0];
+  //     // Add new track to existing local stream (preserve audio tracks)
+  //     if (localStreamRef.current) {
+  //       localStreamRef.current.addTrack(newVideoTrack);
+  //       console.log('✅ Added new video track to local stream');
+  //     } else {
+  //       // If no local stream exists, create one with audio
+  //       const audioConstraints = { audio: true, video: false };
+  //       try {
+  //         const audioStream = await navigator.mediaDevices.getUserMedia(audioConstraints);
+  //         const audioTrack = audioStream.getAudioTracks()[0];
 
-          // Create new stream with both tracks
-          localStreamRef.current = new MediaStream([newVideoTrack, audioTrack]);
-          setLocalStream(localStreamRef.current); // Update state
-          console.log('✅ Created new local stream with audio and video');
-        } catch (audioError) {
-          console.warn('Failed to get audio, using video only:', audioError);
-          localStreamRef.current = newStream;
-          setLocalStream(newStream); // Update state
-        }
-      }
+  //         // Create new stream with both tracks
+  //         localStreamRef.current = new MediaStream([newVideoTrack, audioTrack]);
+  //         setLocalStream(localStreamRef.current); // Update state
+  //         console.log('✅ Created new local stream with audio and video');
+  //       } catch (audioError) {
+  //         console.warn('Failed to get audio, using video only:', audioError);
+  //         localStreamRef.current = newStream;
+  //         setLocalStream(newStream); // Update state
+  //       }
+  //     }
 
-      // Update peer connections first
-      await updatePeerConnections(newVideoTrack);
+  //     // Update peer connections first
+  //     await updatePeerConnections(newVideoTrack);
 
-      // Then update local video element - THIS IS THE KEY FIX
-      await updateLocalVideoElement();
+  //     // Then update local video element - THIS IS THE KEY FIX
+  //     await updateLocalVideoElement();
 
-      // Update state and UI
-      setIsVideoOff(false);
-      setVideoError(false);
-      setLocalVideoKey(prev => prev + 1); // Force React remount
+  //     // Update state and UI
+  //     setIsVideoOff(false);
+  //     setVideoError(false);
+  //     setLocalVideoKey(prev => prev + 1); // Force React remount
 
-      console.log('✅ Successfully reacquired and setup video stream');
+  //     console.log('✅ Successfully reacquired and setup video stream');
 
-    } catch (error) {
-      console.error('❌ Failed to reacquire video stream:', error);
-      setIsVideoOff(true);
-      setError('Failed to turn on camera');
+  //   } catch (error) {
+  //     console.error('❌ Failed to reacquire video stream:', error);
+  //     setIsVideoOff(true);
+  //     setError('Failed to turn on camera');
 
-      // Ensure local video is cleared on failure
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = null;
-      }
+  //     // Ensure local video is cleared on failure
+  //     if (localVideoRef.current) {
+  //       localVideoRef.current.srcObject = null;
+  //     }
 
-      throw error;
-    }
-  }, [setIsVideoOff, setVideoError, setError, setLocalVideoKey, setLocalStream]);
+  //     throw error;
+  //   }
+  // }, [setIsVideoOff, setVideoError, setError, setLocalVideoKey, setLocalStream]);
 
-  const updatePeerConnections = useCallback(async (videoTrack) => {
-    const updatePromises = Object.values(peerConnectionsRef.current).map(async peerConnection => {
-      try {
-        const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
-        if (sender) {
-          await sender.replaceTrack(videoTrack);
-          console.log('Updated peer connection with new video track');
-        } else {
-          // Add track if no video sender exists
-          if (localStreamRef.current) {
-            peerConnection.addTrack(videoTrack, localStreamRef.current);
-            console.log('Added video track to peer connection');
-          }
-        }
-      } catch (error) {
-        console.warn('Error updating peer connection:', error);
-        // Don't throw here, continue with other connections
-      }
-    });
+  // const updatePeerConnections = useCallback(async (videoTrack) => {
+  //   const updatePromises = Object.values(peerConnectionsRef.current).map(async peerConnection => {
+  //     try {
+  //       const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+  //       if (sender) {
+  //         await sender.replaceTrack(videoTrack);
+  //         console.log('Updated peer connection with new video track');
+  //       } else {
+  //         // Add track if no video sender exists
+  //         if (localStreamRef.current) {
+  //           peerConnection.addTrack(videoTrack, localStreamRef.current);
+  //           console.log('Added video track to peer connection');
+  //         }
+  //       }
+  //     } catch (error) {
+  //       console.warn('Error updating peer connection:', error);
+  //       // Don't throw here, continue with other connections
+  //     }
+  //   });
 
-    await Promise.allSettled(updatePromises);
-  }, []);
+  //   await Promise.allSettled(updatePromises);
+  // }, []);
 
-  const updateLocalVideoElement = useCallback(async () => {
-    if (!localVideoRef.current || !localStreamRef.current) {
-      console.warn('Local video ref or stream not available');
-      return;
-    }
+  // const updateLocalVideoElement = useCallback(async () => {
+  //   if (!localVideoRef.current || !localStreamRef.current) {
+  //     console.warn('Local video ref or stream not available');
+  //     return;
+  //   }
 
-    try {
-      const videoElement = localVideoRef.current;
+  //   try {
+  //     const videoElement = localVideoRef.current;
 
-      console.log('🔄 Updating local video element...');
+  //     console.log('🔄 Updating local video element...');
 
-      // Force stop any existing playback
-      videoElement.pause();
-      videoElement.srcObject = null;
+  //     // Force stop any existing playback
+  //     videoElement.pause();
+  //     videoElement.srcObject = null;
 
-      // Small delay to ensure cleanup
-      await new Promise(resolve => setTimeout(resolve, 100));
+  //     // Small delay to ensure cleanup
+  //     await new Promise(resolve => setTimeout(resolve, 100));
 
-      // Set new stream
-      videoElement.srcObject = localStreamRef.current;
+  //     // Set new stream
+  //     videoElement.srcObject = localStreamRef.current;
 
-      // Set video properties
-      videoElement.muted = true; // Prevent audio feedback for local video
-      videoElement.playsInline = true; // Important for mobile
-      videoElement.autoplay = true;
+  //     // Set video properties
+  //     videoElement.muted = true; // Prevent audio feedback for local video
+  //     videoElement.playsInline = true; // Important for mobile
+  //     videoElement.autoplay = true;
 
-      // Force load and play
-      videoElement.load();
+  //     // Force load and play
+  //     videoElement.load();
 
-      // Wait for the video to be ready
-      await new Promise(resolve => {
-        const timeout = setTimeout(() => {
-          console.warn('Timeout waiting for video to load');
-          resolve(); // Don't reject, just continue
-        }, 3000);
+  //     // Wait for the video to be ready
+  //     await new Promise(resolve => {
+  //       const timeout = setTimeout(() => {
+  //         console.warn('Timeout waiting for video to load');
+  //         resolve(); // Don't reject, just continue
+  //       }, 3000);
 
-        const onLoadedMetadata = () => {
-          clearTimeout(timeout);
-          videoElement.removeEventListener('loadedmetadata', onLoadedMetadata);
-          console.log('✅ Local video metadata loaded');
-          resolve();
-        };
+  //       const onLoadedMetadata = () => {
+  //         clearTimeout(timeout);
+  //         videoElement.removeEventListener('loadedmetadata', onLoadedMetadata);
+  //         console.log('✅ Local video metadata loaded');
+  //         resolve();
+  //       };
 
-        videoElement.addEventListener('loadedmetadata', onLoadedMetadata);
-      });
+  //       videoElement.addEventListener('loadedmetadata', onLoadedMetadata);
+  //     });
 
-      // Now play the video
-      try {
-        await videoElement.play();
-        console.log('✅ Local video element updated and playing');
-      } catch (playError) {
-        if (playError.name !== 'AbortError') {
-          console.warn('Play failed, but video element is updated:', playError);
-        }
-      }
+  //     // Now play the video
+  //     try {
+  //       await videoElement.play();
+  //       console.log('✅ Local video element updated and playing');
+  //     } catch (playError) {
+  //       if (playError.name !== 'AbortError') {
+  //         console.warn('Play failed, but video element is updated:', playError);
+  //       }
+  //     }
 
-    } catch (error) {
-      console.error('Error updating local video element:', error);
+  //   } catch (error) {
+  //     console.error('Error updating local video element:', error);
 
-      // Fallback: try a simple direct assignment
-      try {
-        const videoElement = localVideoRef.current;
-        videoElement.srcObject = localStreamRef.current;
-        videoElement.muted = true;
-        videoElement.playsInline = true;
-        await videoElement.play();
-        console.log('✅ Fallback video update succeeded');
-      } catch (fallbackError) {
-        console.error('Fallback video update also failed:', fallbackError);
-      }
-    }
-  }, []);
+  //     // Fallback: try a simple direct assignment
+  //     try {
+  //       const videoElement = localVideoRef.current;
+  //       videoElement.srcObject = localStreamRef.current;
+  //       videoElement.muted = true;
+  //       videoElement.playsInline = true;
+  //       await videoElement.play();
+  //       console.log('✅ Fallback video update succeeded');
+  //     } catch (fallbackError) {
+  //       console.error('Fallback video update also failed:', fallbackError);
+  //     }
+  //   }
+  // }, []);
 
   // Debug function to help troubleshoot local video issues
-  const debugLocalVideo = useCallback(() => {
-    console.log('🔍 DEBUG: Local Video Status');
-    console.log('localVideoRef.current:', !!localVideoRef.current);
-    console.log('localStreamRef.current:', !!localStreamRef.current);
+  // const debugLocalVideo = useCallback(() => {
+  //   console.log('🔍 DEBUG: Local Video Status');
+  //   console.log('localVideoRef.current:', !!localVideoRef.current);
+  //   console.log('localStreamRef.current:', !!localStreamRef.current);
 
-    if (localVideoRef.current) {
-      const videoEl = localVideoRef.current;
-      console.log('Video element properties:', {
-        srcObject: !!videoEl.srcObject,
-        videoWidth: videoEl.videoWidth,
-        videoHeight: videoEl.videoHeight,
-        paused: videoEl.paused,
-        muted: videoEl.muted,
-        autoplay: videoEl.autoplay,
-        playsInline: videoEl.playsInline,
-        readyState: videoEl.readyState,
-        networkState: videoEl.networkState
-      });
-    }
+  //   if (localVideoRef.current) {
+  //     const videoEl = localVideoRef.current;
+  //     console.log('Video element properties:', {
+  //       srcObject: !!videoEl.srcObject,
+  //       videoWidth: videoEl.videoWidth,
+  //       videoHeight: videoEl.videoHeight,
+  //       paused: videoEl.paused,
+  //       muted: videoEl.muted,
+  //       autoplay: videoEl.autoplay,
+  //       playsInline: videoEl.playsInline,
+  //       readyState: videoEl.readyState,
+  //       networkState: videoEl.networkState
+  //     });
+  //   }
 
-    if (localStreamRef.current) {
-      const stream = localStreamRef.current;
-      console.log('Stream properties:', {
-        id: stream.id,
-        active: stream.active,
-        videoTracks: stream.getVideoTracks().length,
-        audioTracks: stream.getAudioTracks().length
-      });
+  //   if (localStreamRef.current) {
+  //     const stream = localStreamRef.current;
+  //     console.log('Stream properties:', {
+  //       id: stream.id,
+  //       active: stream.active,
+  //       videoTracks: stream.getVideoTracks().length,
+  //       audioTracks: stream.getAudioTracks().length
+  //     });
 
-      const videoTracks = stream.getVideoTracks();
-      videoTracks.forEach((track, index) => {
-        console.log(`Video track ${index}:`, {
-          id: track.id,
-          kind: track.kind,
-          enabled: track.enabled,
-          readyState: track.readyState,
-          muted: track.muted
-        });
-      });
-    }
-  }, []);
+  //     const videoTracks = stream.getVideoTracks();
+  //     videoTracks.forEach((track, index) => {
+  //       console.log(`Video track ${index}:`, {
+  //         id: track.id,
+  //         kind: track.kind,
+  //         enabled: track.enabled,
+  //         readyState: track.readyState,
+  //         muted: track.muted
+  //       });
+  //     });
+  //   }
+  // }, []);
 
   // Quick fix function you can call if video stops working
-  const forceRefreshLocalVideo = useCallback(async () => {
-    console.log('🔄 Force refreshing local video...');
+  // const forceRefreshLocalVideo = useCallback(async () => {
+  //   console.log('🔄 Force refreshing local video...');
 
-    if (!localStreamRef.current || !localVideoRef.current) {
-      console.error('Missing refs for video refresh');
-      return;
-    }
+  //   if (!localStreamRef.current || !localVideoRef.current) {
+  //     console.error('Missing refs for video refresh');
+  //     return;
+  //   }
 
-    try {
-      await updateLocalVideoElement();
-      console.log('✅ Force refresh completed');
+  //   try {
+  //     await updateLocalVideoElement();
+  //     console.log('✅ Force refresh completed');
 
-    } catch (error) {
-      console.error('❌ Force refresh failed:', error);
-      debugLocalVideo();
-    }
-  }, [updateLocalVideoElement, debugLocalVideo]);
+  //   } catch (error) {
+  //     console.error('❌ Force refresh failed:', error);
+  //     debugLocalVideo();
+  //   }
+  // }, [updateLocalVideoElement, debugLocalVideo]);
 
   // Updated toggleVideo function - replace your existing one
-  const toggleVideo = useCallback(async () => {
-    if (!localStreamRef.current) {
-      console.warn('No local stream available');
-      return;
-    }
+  // const toggleVideo = useCallback(async () => {
+  //   if (!localStreamRef.current) {
+  //     console.warn('No local stream available');
+  //     return;
+  //   }
 
-    const videoTracks = localStreamRef.current.getVideoTracks();
-    const videoTrack = videoTracks[0];
-    const currentTrackEnabled = videoTrack?.enabled ?? false;
-    const newTrackEnabled = !currentTrackEnabled;
+  //   const videoTracks = localStreamRef.current.getVideoTracks();
+  //   const videoTrack = videoTracks[0];
+  //   const currentTrackEnabled = videoTrack?.enabled ?? false;
+  //   const newTrackEnabled = !currentTrackEnabled;
 
-    console.log('Toggling video:', {
-      current: currentTrackEnabled,
-      new: newTrackEnabled,
-      trackState: videoTrack?.readyState
-    });
+  //   console.log('Toggling video:', {
+  //     current: currentTrackEnabled,
+  //     new: newTrackEnabled,
+  //     trackState: videoTrack?.readyState
+  //   });
 
-    try {
-      if (newTrackEnabled) {
-        // Turning video ON
-        if (!videoTrack || videoTrack.readyState !== 'live') {
-          // Track is ended or missing, stop and remove all old video tracks before reacquiring
-          videoTracks.forEach(track => {
-            try {
-              track.stop();
-              localStreamRef.current.removeTrack(track);
-              console.log('Stopped and removed old video track:', track.id);
-            } catch (err) {
-              console.warn('Error stopping/removing old video track:', err);
-            }
-          });
-          try {
-            const newStream = await navigator.mediaDevices.getUserMedia({ video: true });
-            const newVideoTrack = newStream.getVideoTracks()[0];
-            // Combine with any existing live audio tracks
-            const audioTracks = localStreamRef.current
-              ? localStreamRef.current.getAudioTracks().filter(t => t.readyState === 'live')
-              : [];
-            const tracks = [newVideoTrack, ...audioTracks];
-            const newMediaStream = new MediaStream(tracks);
-            localStreamRef.current = newMediaStream;
-            setLocalStream(newMediaStream);
-            // Always use the same stream for local preview
-            if (localVideoRef.current) {
-              try {
-                localVideoRef.current.srcObject = null;
-                localVideoRef.current.srcObject = newMediaStream;
-                localVideoRef.current.play().catch(err => {
-                  if (err.name !== 'AbortError') {
-                    console.warn('Forced play after reacquire failed:', err);
-                  }
-                });
-                console.log('👍Assigned newMediaStream to local video element after reacquire');
-                console.log('New local stream tracks:', newMediaStream.getTracks());
-                console.log('Video element srcObject:', localVideoRef.current.srcObject);
-              } catch (err) {
-                console.warn('Error forcing local video refresh:', err);
-              }
-            }
-            setIsVideoOff(false);
-            setLocalVideoKey(prev => prev + 1); // Force React remount
-          } catch (err) {
-            console.error('Error reacquiring local video stream:', err);
-            setIsVideoOff(true);
-          }
-        } else {
-          // Track is live, just enable it
-          videoTrack.enabled = true;
-          setIsVideoOff(false);
-          await updatePeerConnections(videoTrack);
+  //   try {
+  //     if (newTrackEnabled) {
+  //       // Turning video ON
+  //       if (!videoTrack || videoTrack.readyState !== 'live') {
+  //         // Track is ended or missing, stop and remove all old video tracks before reacquiring
+  //         videoTracks.forEach(track => {
+  //           try {
+  //             track.stop();
+  //             localStreamRef.current.removeTrack(track);
+  //             console.log('Stopped and removed old video track:', track.id);
+  //           } catch (err) {
+  //             console.warn('Error stopping/removing old video track:', err);
+  //           }
+  //         });
+  //         try {
+  //           const newStream = await navigator.mediaDevices.getUserMedia({ video: true });
+  //           const newVideoTrack = newStream.getVideoTracks()[0];
+  //           // Combine with any existing live audio tracks
+  //           const audioTracks = localStreamRef.current
+  //             ? localStreamRef.current.getAudioTracks().filter(t => t.readyState === 'live')
+  //             : [];
+  //           const tracks = [newVideoTrack, ...audioTracks];
+  //           const newMediaStream = new MediaStream(tracks);
+  //           localStreamRef.current = newMediaStream;
+  //           setLocalStream(newMediaStream);
+  //           // Always use the same stream for local preview
+  //           if (localVideoRef.current) {
+  //             try {
+  //               localVideoRef.current.srcObject = null;
+  //               localVideoRef.current.srcObject = newMediaStream;
+  //               localVideoRef.current.play().catch(err => {
+  //                 if (err.name !== 'AbortError') {
+  //                   console.warn('Forced play after reacquire failed:', err);
+  //                 }
+  //               });
+  //               console.log('👍Assigned newMediaStream to local video element after reacquire');
+  //               console.log('New local stream tracks:', newMediaStream.getTracks());
+  //               console.log('Video element srcObject:', localVideoRef.current.srcObject);
+  //             } catch (err) {
+  //               console.warn('Error forcing local video refresh:', err);
+  //             }
+  //           }
+  //           setIsVideoOff(false);
+  //           setLocalVideoKey(prev => prev + 1); // Force React remount
+  //         } catch (err) {
+  //           console.error('Error reacquiring local video stream:', err);
+  //           setIsVideoOff(true);
+  //         }
+  //       } else {
+  //         // Track is live, just enable it
+  //         videoTrack.enabled = true;
+  //         setIsVideoOff(false);
+  //         await updatePeerConnections(videoTrack);
+  //       }
+  //     } else {
+  //       // Turning video OFF
+  //       videoTracks.forEach(track => {
+  //         track.enabled = false;
+  //       });
+  //       setIsVideoOff(true);
+
+  //       // Update peer connections with disabled track
+  //       const disabledTrack = videoTracks[0];
+  //       if (disabledTrack) {
+  //         await updatePeerConnections(disabledTrack);
+  //       }
+  //     }
+
+  //     // Emit state change to server
+  //     if (roomId && socket) {
+  //       socket.emit('videoStateChange', {
+  //         roomId,
+  //         isVideoOff: !newTrackEnabled
+  //       });
+  //     }
+  //   } catch (error) {
+  //     console.error('Error toggling video:', error);
+  //     // Revert UI state on error
+  //     setIsVideoOff(currentTrackEnabled);
+  //     setError('Failed to toggle video');
+  //   }
+  // }, [roomId, socket, reacquireVideoStream, updatePeerConnections, setIsVideoOff, setError]);
+  const toggleVideo = () => {
+        if (localStreamRef.current) {
+            localStreamRef.current.getVideoTracks().forEach(track => {
+                track.enabled = !track.enabled;
+                setIsVideoOff(!track.enabled);
+            });
         }
-      } else {
-        // Turning video OFF
-        videoTracks.forEach(track => {
-          track.enabled = false;
-        });
-        setIsVideoOff(true);
-
-        // Update peer connections with disabled track
-        const disabledTrack = videoTracks[0];
-        if (disabledTrack) {
-          await updatePeerConnections(disabledTrack);
-        }
-      }
-
-      // Emit state change to server
-      if (roomId && socket) {
-        socket.emit('videoStateChange', {
-          roomId,
-          isVideoOff: !newTrackEnabled
-        });
-      }
-    } catch (error) {
-      console.error('Error toggling video:', error);
-      // Revert UI state on error
-      setIsVideoOff(currentTrackEnabled);
-      setError('Failed to toggle video');
-    }
-  }, [roomId, socket, reacquireVideoStream, updatePeerConnections, setIsVideoOff, setError]);
+    };
 
   // Add this useEffect to make debug functions available globally
-  useEffect(() => {
-    // Make debug functions available globally for testing
-    window.debugLocalVideo = debugLocalVideo;
-    window.forceRefreshLocalVideo = forceRefreshLocalVideo;
+  // useEffect(() => {
+  //   // Make debug functions available globally for testing
+  //   window.debugLocalVideo = debugLocalVideo;
+  //   window.forceRefreshLocalVideo = forceRefreshLocalVideo;
 
-    // Cleanup function
-    return () => {
-      delete window.debugLocalVideo;
-      delete window.forceRefreshLocalVideo;
-    };
-  }, [debugLocalVideo, forceRefreshLocalVideo]);
+  //   // Cleanup function
+  //   return () => {
+  //     delete window.debugLocalVideo;
+  //     delete window.forceRefreshLocalVideo;
+  //   };
+  // }, [debugLocalVideo, forceRefreshLocalVideo]);
   // Let me share my screen
   const toggleScreenShare = async () => {
     if (isScreenSharing) {
@@ -2392,7 +2460,7 @@ const VideoChat = () => {
               }
             });
           }
-        } }
+        }}
         onCanPlay={(e) => {
           console.log('Local video can play');
           if (!e.target.srcObject && localStreamRef.current) {
@@ -2405,14 +2473,14 @@ const VideoChat = () => {
               }
             });
           }
-        } }
+        }}
         onPlay={() => {
           console.log('Local video started playing');
-        } }
+        }}
         onError={(e) => {
           console.error('Local video error:', e);
           setVideoError(true);
-        } } /><div className="participant-name">
+        }} /><div className="participant-name">
           {localUserName} (You)
         </div></>
     );
@@ -2460,7 +2528,7 @@ const VideoChat = () => {
           ))}
         </div>
       )}
-      
+
       <ConnectionStatus
         status={connectionStatus}
         roomId={roomId}
