@@ -103,7 +103,7 @@ const VideoChat = () => {
 
 
   const getUserMedia = useCallback(async (constraints = {
-    video:true,
+    video: true,
     audio: true
   }) => {
     // If we already have an active stream, return it
@@ -424,15 +424,15 @@ const VideoChat = () => {
       const pc = new RTCPeerConnection({
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
-           { urls: 'stun:openrelay.metered.ca:80' },
+          { urls: 'stun:openrelay.metered.ca:80' },
           {
-             urls: 'turn:openrelay.metered.ca:80',
-             username: 'openrelayproject',
-             credential: 'openrelayproject',
-           },
-         ],
-         iceCandidatePoolSize: 10
-       });
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject',
+          },
+        ],
+        iceCandidatePoolSize: 10
+      });
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
@@ -1590,14 +1590,51 @@ const VideoChat = () => {
   //     setError('Failed to toggle video');
   //   }
   // }, [roomId, socket, reacquireVideoStream, updatePeerConnections, setIsVideoOff, setError]);
-  const toggleVideo = () => {
-        if (localStreamRef.current) {
-            localStreamRef.current.getVideoTracks().forEach(track => {
-                track.enabled = !track.enabled;
-                setIsVideoOff(!track.enabled);
-            });
+  // Assuming you have a localVideoRef and localStream state
+
+  const toggleVideo = async () => {
+    if (!localStream) return;
+
+    const videoTrack = localStream.getVideoTracks()[0];
+
+    if (videoTrack.enabled) {
+      // 🔴 Turn OFF
+      videoTrack.enabled = false;
+      localVideoRef.current.srcObject = null; // clear preview
+      setIsVideoOff(true);
+      // Update peer connections to disable video
+      
+    } else {
+      // 🟢 Turn ON
+      videoTrack.enabled = true;
+      setIsVideoOff(false);
+      // ✅ Reattach to local preview
+
+      try {
+        // Get a fresh video stream
+        const newStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        const newVideoTrack = newStream.getVideoTracks()[0];
+
+        // Replace the old track in the PeerConnection
+        // Access the peer connection using a valid userId
+        let peerConnection;
+        for (const userId in peerConnectionsRef.current) {
+          peerConnection = peerConnectionsRef.current[userId];
+          const sender = peerConnection.getSenders().find(s => s.track?.kind === "video");
+          if (sender) sender.replaceTrack(newVideoTrack);
         }
-    };
+        // Update localStream
+        localStream.removeTrack(videoTrack);
+        localStream.addTrack(newVideoTrack);
+        // ✅ Reattach to local preview
+        localVideoRef.current.srcObject = new MediaStream([newVideoTrack]);
+
+      } catch (err) {
+        console.error("Error restarting video:", err);
+      }
+    }
+  };
+
 
   // Add this useEffect to make debug functions available globally
   // useEffect(() => {
