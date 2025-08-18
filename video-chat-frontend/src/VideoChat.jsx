@@ -446,14 +446,22 @@ const VideoChat = () => {
 
       pc.ontrack = (event) => {
         console.log(`Track received from ${userId}`);
+
         setRemoteStreams((prev) => {
-          // Avoid adding duplicate streams
-          if (prev.find(s => s.userId === userId)) {
-            return prev;
+          const existing = prev.find(s => s.userId === userId);
+          if (existing) {
+            // 🔄 Update the existing stream
+            return prev.map(s =>
+              s.userId === userId ? { ...s, stream: event.streams[0] } : s
+            );
+          } else {
+            // ➕ Add new stream
+            return [...prev, { userId, stream: event.streams[0] }];
           }
-          return [...prev, { userId, stream: event.streams[0] }];
         });
       };
+
+
 
       // Add local tracks if the stream is ready
       if (localStreamRef.current) {
@@ -1590,50 +1598,77 @@ const VideoChat = () => {
   //     setError('Failed to toggle video');
   //   }
   // }, [roomId, socket, reacquireVideoStream, updatePeerConnections, setIsVideoOff, setError]);
-  // Assuming you have a localVideoRef and localStream state
+  // Function to update video track for all peers
 
-  const toggleVideo = async () => {
-    if (!localStream) return;
 
-    const videoTrack = localStream.getVideoTracks()[0];
 
-    if (videoTrack.enabled) {
-      // 🔴 Turn OFF
-      videoTrack.enabled = false;
-      localVideoRef.current.srcObject = null; // clear preview
-      setIsVideoOff(true);
-      // Update peer connections to disable video
-      
-    } else {
-      // 🟢 Turn ON
-      videoTrack.enabled = true;
-      setIsVideoOff(false);
-      // ✅ Reattach to local preview
-
-      try {
-        // Get a fresh video stream
-        const newStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-        const newVideoTrack = newStream.getVideoTracks()[0];
-
-        // Replace the old track in the PeerConnection
-        // Access the peer connection using a valid userId
-        let peerConnection;
-        for (const userId in peerConnectionsRef.current) {
-          peerConnection = peerConnectionsRef.current[userId];
-          const sender = peerConnection.getSenders().find(s => s.track?.kind === "video");
-          if (sender) sender.replaceTrack(newVideoTrack);
-        }
-        // Update localStream
-        localStream.removeTrack(videoTrack);
-        localStream.addTrack(newVideoTrack);
-        // ✅ Reattach to local preview
-        localVideoRef.current.srcObject = new MediaStream([newVideoTrack]);
-
-      } catch (err) {
-        console.error("Error restarting video:", err);
-      }
+  const toggleVideo = useCallback(async () => {
+    if (!localStreamRef.current) {
+      console.warn("toggleVideo called without a local stream");
+      return;
     }
-  };
+
+    let videoTrack = localStreamRef.current.getVideoTracks()[0];
+    const isTurningOn = !videoTrack || !videoTrack.enabled || videoTrack.readyState === 'ended';
+
+    if (isTurningOn) {
+      // --- Turning Video ON ---
+      try {
+        let newVideoTrack;
+        if (!videoTrack || videoTrack.readyState === 'ended') {
+          console.log("🎥 Acquiring a new video track...");
+          const newStream = await navigator.mediaDevices.getUserMedia({ video: true });
+          newVideoTrack = newStream.getVideoTracks()[0];
+
+          // Remove old track if exists
+          if (videoTrack) {
+            localStreamRef.current.removeTrack(videoTrack);
+          }
+          // Add the new track to local stream
+          localStreamRef.current.addTrack(newVideoTrack);
+          videoTrack = newVideoTrack;
+        } else {
+          // Re-enable existing track
+          console.log("✅ Re-enabling existing video track.");
+          videoTrack.enabled = true;
+          setIsVideoOff(false);
+        }
+
+        // --- Update peer connections ---
+        for (const pc of Object.values(peerConnectionsRef.current)) {
+          const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+          if (sender) {
+            await sender.replaceTrack(videoTrack);
+            console.log("🔄 Video track replaced for a peer.");
+          }
+        }
+
+        // --- Update local preview ---
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = localStreamRef.current;
+        }
+
+        setIsVideoOff(false);
+
+      } catch (error) {
+        console.error("❌ Failed to turn on video:", error);
+        setError("Could not start camera. Please check permissions.");
+      }
+    } else {
+      // --- Turning Video OFF ---
+      console.log("🚫 Disabling video track.");
+      videoTrack.enabled = false;
+      setIsVideoOff(true);
+    }
+
+    // --- Notify others about state change ---
+    if (roomId && socket) {
+      socket.emit("videoStateChange", {
+        roomId,
+        isVideoOff: !isTurningOn,
+      });
+    }
+  }, [roomId, socket, setError]);
 
 
   // Add this useEffect to make debug functions available globally
@@ -2024,7 +2059,7 @@ const VideoChat = () => {
             </div>
           ) : (
             <video
-              key={`video-${streamInfo.userId}-${Date.now()}`}
+              key={`video-${streamInfo.userId}`}
               data-user-id={streamInfo.userId}
               autoPlay
               playsInline

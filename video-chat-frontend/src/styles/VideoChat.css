@@ -63,7 +63,7 @@
   display: grid;
   gap: 1rem;
   width: 100%;
-  height: calc(100% - 80px); /* Account for controls height */
+  height: calc(100% - 70px); /* Account for controls height */
 }
 
 /* Simple grid layouts */
