@@ -17,7 +17,9 @@ const io = socketIO(server, {
             "https://krvow.netlify.app"
         ],
         methods: ["GET", "POST"],
-        credentials: true
+        credentials: true,
+        secure: true, // Use secure if your server is HTTPS
+        transports: ["websocket", "polling"]
     }
 });
 

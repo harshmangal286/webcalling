@@ -8,12 +8,15 @@ import './styles/VideoChat.css';
 import PropTypes from 'prop-types';
 
 
+
+
 const VideoChat = () => {
   // My refs for video elements and connections
   const localVideoRef = useRef(null);
   const peerConnectionsRef = useRef({});
   const localStreamRef = useRef(null);
   const [localStream, setLocalStream] = useState(null);
+  const [setShowPlaceholder] = useState(false); // ✅ define state
 
   // States to manage my video chat
   const [localUserId, setLocalUserId] = useState(null);
@@ -1144,6 +1147,7 @@ const VideoChat = () => {
       // Fix the reversed logic - when track is enabled, we're not muted
       const isTrackEnabled = audioTracks[0]?.enabled;
       setIsAudioMuted(!isTrackEnabled);
+
       console.log('Audio toggled:', { trackEnabled: isTrackEnabled, isMuted: !isTrackEnabled });
     }
   };
@@ -2126,6 +2130,8 @@ const VideoChat = () => {
 
                     el.onwaiting = () => {
                       console.warn(`Video waiting for ${streamInfo.userId}`);
+                      console.log("Video waiting for", streamInfo.userId, "readyState:", el.readyState);
+                      setShowPlaceholder(true);
                       // Add detailed debugging for waiting state
                       console.log(`Video waiting details for ${streamInfo.userId}:`, {
                         readyState: el.readyState,
@@ -2181,6 +2187,7 @@ const VideoChat = () => {
             />
           )}
           <div className="participant-name">{username}</div>
+         
         </div>
       );
     }).filter(Boolean);
@@ -2399,50 +2406,50 @@ const VideoChat = () => {
   };
 
   // Deep debugging for local video element and stream
-  useEffect(() => {
-    const videoEl = localVideoRef.current;
-    const stream = localStreamRef.current;
-    console.log('=== LOCAL VIDEO DEBUG ===');
-    if (!videoEl) {
-      console.warn('Local video element is null');
-      return;
-    }
-    if (!stream) {
-      console.warn('Local stream is null');
-      return;
-    }
-    const videoTracks = stream.getVideoTracks();
-    console.log('Local stream video tracks:', videoTracks.length);
-    videoTracks.forEach((track, i) => {
-      console.log(`Track ${i}:`, {
-        id: track.id,
-        kind: track.kind,
-        enabled: track.enabled,
-        readyState: track.readyState,
-        muted: track.muted
-      });
-    });
-    if (videoTracks.length > 1) {
-      console.warn('More than one video track in localStreamRef.current! This can cause preview issues.');
-    }
-    console.log('Local video element srcObject:', videoEl.srcObject === stream ? 'CORRECT' : videoEl.srcObject);
-    console.log('Video element readyState:', videoEl.readyState, 'paused:', videoEl.paused, 'currentTime:', videoEl.currentTime);
-    // Force srcObject and play
-    if (videoEl.srcObject !== stream) {
-      videoEl.srcObject = stream;
-      console.log('Set local video element srcObject to localStreamRef.current');
-    }
-    if (videoEl.paused) {
-      videoEl.play().then(() => {
-        console.log('Forced local video play()');
-      }).catch(err => {
-        if (err.name !== 'AbortError') {
-          console.warn('Forced play failed:', err);
-        }
-      });
-    }
-    console.log('=== END LOCAL VIDEO DEBUG ===');
-  }, [localStreamRef.current, localVideoKey, isJoined]);
+  // useEffect(() => {
+  //   const videoEl = localVideoRef.current;
+  //   const stream = localStreamRef.current;
+  //   console.log('=== LOCAL VIDEO DEBUG ===');
+  //   if (!videoEl) {
+  //     console.warn('Local video element is null');
+  //     return;
+  //   }
+  //   if (!stream) {
+  //     console.warn('Local stream is null');
+  //     return;
+  //   }
+  //   const videoTracks = stream.getVideoTracks();
+  //   console.log('Local stream video tracks:', videoTracks.length);
+  //   videoTracks.forEach((track, i) => {
+  //     console.log(`Track ${i}:`, {
+  //       id: track.id,
+  //       kind: track.kind,
+  //       enabled: track.enabled,
+  //       readyState: track.readyState,
+  //       muted: track.muted
+  //     });
+  //   });
+  //   if (videoTracks.length > 1) {
+  //     console.warn('More than one video track in localStreamRef.current! This can cause preview issues.');
+  //   }
+  //   console.log('Local video element srcObject:', videoEl.srcObject === stream ? 'CORRECT' : videoEl.srcObject);
+  //   console.log('Video element readyState:', videoEl.readyState, 'paused:', videoEl.paused, 'currentTime:', videoEl.currentTime);
+  //   // Force srcObject and play
+  //   if (videoEl.srcObject !== stream) {
+  //     videoEl.srcObject = stream;
+  //     console.log('Set local video element srcObject to localStreamRef.current');
+  //   }
+  //   if (videoEl.paused) {
+  //     videoEl.play().then(() => {
+  //       console.log('Forced local video play()');
+  //     }).catch(err => {
+  //       if (err.name !== 'AbortError') {
+  //         console.warn('Forced play failed:', err);
+  //       }
+  //     });
+  //   }
+  //   console.log('=== END LOCAL VIDEO DEBUG ===');
+  // }, [localStreamRef.current, localVideoKey, isJoined]);
 
   // Render functions
   if (error) {
@@ -2669,7 +2676,7 @@ const VideoChat = () => {
               {showParticipants ? 'person_off' : 'people'}
             </span>
           </button>
-          <button
+          {/* <button
             onClick={() => {
               console.log('=== MANUAL CALL INITIATION ===');
               // Try to initiate calls with all participants
@@ -2685,8 +2692,8 @@ const VideoChat = () => {
             style={{ backgroundColor: '#28a745', color: 'white' }}
           >
             Force Call
-          </button>
-          <button
+          </button> */}
+          {/* <button
             onClick={() => {
               console.log('=== MANUAL SOCKET RECONNECTION ===');
               if (socket) {
@@ -2705,7 +2712,7 @@ const VideoChat = () => {
             style={{ backgroundColor: '#ffc107', color: 'black' }}
           >
             Reconnect
-          </button>
+          </button> */}
           {/* <button
              onClick={() => {
                console.log('=== CONNECTION STATUS DEBUG ===');
@@ -2748,7 +2755,7 @@ const VideoChat = () => {
            >
              Status
            </button> */}
-          <button
+          {/* <button
             onClick={() => {
               console.log('=== MANUAL VIDEO TEST ===');
 
@@ -2875,7 +2882,7 @@ const VideoChat = () => {
             style={{ backgroundColor: '#ff6b6b', color: 'white' }}
           >
             Debug
-          </button>
+          </button> */}
         </div>
       </div>
       <div className="message-wrapper">
