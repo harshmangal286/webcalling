@@ -439,12 +439,19 @@ const VideoChat = () => {
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
+          console.log("ICE Candidate generated:", event.candidate);
           socket.emit('candidate', {
             to: userId,
             candidate: event.candidate,
             roomId,
           });
         }
+        else {
+          console.log("All ICE candidates sent for user:", userId);
+        }
+      };
+      pc.oniceconnectionstatechange = () => {
+        console.log("ICE state:", pc.iceConnectionState);
       };
 
       pc.ontrack = (event) => {
@@ -604,6 +611,7 @@ const VideoChat = () => {
         offerToReceiveAudio: true,
         offerToReceiveVideo: true
       });
+
 
       console.log('Setting local description');
       await peerConnection.setLocalDescription(offer);
@@ -2187,7 +2195,7 @@ const VideoChat = () => {
             />
           )}
           <div className="participant-name">{username}</div>
-         
+
         </div>
       );
     }).filter(Boolean);
