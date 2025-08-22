@@ -1,7 +1,9 @@
-/* My main container layout */
+/* =================================
+   Main Layout & Structure
+==================================== */
 .container {
   display: grid;
-  grid-template-columns: 1fr 400px; /* Main video area and chat sidebar */
+  grid-template-columns: 1fr 400px; /* Main content and chat sidebar */
   grid-template-rows: 1fr;
   background: #1a1a1a;
   color: white;
@@ -9,28 +11,95 @@
   gap: 1rem;
   padding: 1rem;
   position: relative;
+  box-sizing: border-box;
 }
 
-/* My video layout styles */
 .video-wrapper {
   display: flex;
   flex-direction: column;
   height: calc(100vh - 2rem);
   position: relative;
-  padding: 1rem;
 }
 
-/* Different layouts depending on participant count */
+/* =================================
+   Video Grid & Items
+==================================== */
+.videos {
+  flex: 1;
+  display: grid;
+  gap: 1rem;
+  width: 100%;
+  height: calc(100% - 80px); /* Account for controls height */
+  padding-bottom: 1rem;
+}
+
+.video-container {
+  position: relative;
+  width: 100%; /* Ensure containers take full width of grid cell */
+  height: 100%; /* Ensure containers take full height of grid cell */
+  aspect-ratio: 16/9;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+  transition: transform 0.3s ease;
+}
+
+.video-item {
+  width: 100%; /* Ensure video fills its container */
+  height: 100%; /* Ensure video fills its container */
+  object-fit: cover;
+}
+
+/* Dynamic Grid Layouts */
 .videos.single {
   grid-template-columns: 1fr;
   place-items: center;
 }
-
-.videos.pair {
-  grid-template-columns: repeat(2, 1fr);
+.videos.single .video-container {
+  max-width: 900px;
 }
 
-/* My control buttons */
+.videos.pair {
+  grid-template-columns: repeat(2, 1fr); /* Explicit two-column layout */
+}
+
+.videos.multiple {
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); /* Flexible layout for 3+ videos */
+  grid-auto-rows: 180px; /* Consistent row height - reduced from 200px */
+}
+.participant-name {
+  position: absolute;
+  bottom: 1rem;
+  left: 1rem;
+  color: white;
+  background: rgba(0, 0, 0, 0.5);
+  padding: 0.3rem 0.6rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.video-error {
+  width: 100%;
+  height: 100%;
+  min-height: 200px;
+  background: #2a2a2a;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
+.video-error .material-symbols-outlined {
+  font-size: 48px;
+  margin-bottom: 1rem;
+}
+
+
+/* =================================
+   Controls Bar
+==================================== */
 .controls {
   position: absolute;
   bottom: 2rem;
@@ -38,95 +107,14 @@
   transform: translateX(-50%);
   display: flex;
   gap: 1rem;
+  align-items: center;
   justify-content: center;
-  padding: 1rem;
+  padding: 0.8rem;
   background: rgba(0, 0, 0, 0.5);
   border-radius: 12px;
   backdrop-filter: blur(10px);
   z-index: 100;
   width: fit-content;
-}
-
-/* My chat sidebar styles */
-.message-wrapper {
-  background: rgba(0, 0, 0, 0.3);
-  border-radius: 12px;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  backdrop-filter: blur(10px);
-  overflow: hidden;
-}
-
-.videos {
-  flex: 1;
-  display: grid;
-  gap: 1rem;
-  width: 100%;
-  height: calc(100% - 70px); /* Account for controls height */
-}
-
-/* Simple grid layouts */
-.videos.single .video-item {
-  max-width: 900px;
-  width: 100%;
-  aspect-ratio: 16/9;
-}
-
-.videos.multiple {
-  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-  grid-auto-rows: 300px;
-}
-
-.video-item {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  background: #000;
-}
-
-.video-item.local {
-  border: 2px solid #007bff;
-}
-
-/* Responsive adjustments */
-@media (max-width: 1200px) {
-  .videos.multiple {
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  }
-}
-
-@media (max-width: 768px) {
-  .video-wrapper {
-    padding: 0.5rem;
-  }
-
-  .videos {
-    gap: 0.5rem;
-  }
-
-  .videos.pair {
-    grid-template-columns: 1fr;
-  }
-
-  .videos.multiple {
-    grid-template-columns: 1fr;
-    grid-auto-rows: 250px;
-  }
-
-  .videos.single .video-item {
-    aspect-ratio: 4/3;
-  }
-}
-
-.video-item:hover {
-  transform: scale(1.02);
-}
-
-.control-separator {
-  width: 1px;
-  background: rgba(255, 255, 255, 0.2);
-  margin: 0 0.5rem;
 }
 
 .controls button {
@@ -151,8 +139,8 @@
 
 .controls button.end-call {
   background: #dc3545;
+  animation: pulse 2s infinite;
 }
-
 .controls button.end-call:hover {
   background: #c82333;
 }
@@ -160,12 +148,24 @@
 .controls button.leave-call {
   background: #ffc107;
 }
-
 .controls button.leave-call:hover {
   background: #e0a800;
 }
 
-/* Add animation for the buttons */
+.controls button.participant-toggle {
+  background: #2196f3;
+}
+.controls button.participant-toggle:hover {
+  background: #1976d2;
+}
+
+.control-separator {
+  width: 1px;
+  height: 25px;
+  background: rgba(255, 255, 255, 0.2);
+  margin: 0 0.5rem;
+}
+
 @keyframes pulse {
   0% {
     transform: scale(1);
@@ -181,8 +181,17 @@
   }
 }
 
-.end-call {
-  animation: pulse 2s infinite;
+/* =================================
+   Chat Sidebar
+==================================== */
+.message-wrapper {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  backdrop-filter: blur(10px);
+  overflow: hidden;
 }
 
 .message-wrapper h3 {
@@ -204,21 +213,12 @@
   min-height: 0;
 }
 
-.message-box::-webkit-scrollbar {
-  width: 6px;
-}
-
-.message-box::-webkit-scrollbar-track {
-  background: #1a1a1a;
-}
-
-.message-box::-webkit-scrollbar-thumb {
-  background-color: #007bff;
-  border-radius: 3px;
-}
+.message-box::-webkit-scrollbar { width: 6px; }
+.message-box::-webkit-scrollbar-track { background: #1a1a1a; }
+.message-box::-webkit-scrollbar-thumb { background-color: #007bff; border-radius: 3px; }
 
 .message {
-  padding: 0.1rem 0.5rem;
+  padding: 0.5rem 0.8rem;
   border-radius: 12px;
   max-width: 85%;
   word-break: break-word;
@@ -227,13 +227,11 @@
 .message.self {
   align-self: flex-end;
   background: #007bff;
-  margin-left: auto;
 }
 
 .message.other {
   align-self: flex-start;
   background: #2a2a2a;
-  margin-right: auto;
 }
 
 .message .username {
@@ -254,7 +252,6 @@
 .message-input {
   padding: 1rem;
   background: rgba(0, 0, 0, 0.2);
-  border-radius: 0 0 12px 12px;
   display: flex;
   gap: 0.5rem;
   flex-shrink: 0;
@@ -287,77 +284,36 @@
 
 .message-input button:hover {
   background: #0056b3;
-  transform: translateY(-2px);
 }
 
-/* Responsive Design */
-@media (max-width: 1400px) {
-  .container {
-    grid-template-columns: 1fr 400px; /* Hide participant list on smaller screens */
-    gap: 1rem;
-  }
 
-  .participants-panel {
-    position: fixed;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    z-index: 100;
-    transform: translateX(-100%);
-    transition: transform 0.3s ease;
-  }
-
-  .participants-panel.show {
-    transform: translateX(0);
-  }
+/* =================================
+   Participants Panel (Slide-out)
+==================================== */
+.participants-panel {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 280px;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 0 12px 12px 0;
+  backdrop-filter: blur(10px);
+  transform: translateX(-100%);
+  transition: transform 0.3s ease-in-out;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
 }
 
-@media (max-width: 1024px) {
-  .container {
-    grid-template-columns: 1fr;
-    grid-template-rows: 1fr auto;
-    padding: 0.5rem;
-    gap: 0.5rem;
-  }
-
-  .message-wrapper {
-    height: 300px;
-    min-height: 300px;
-  }
-
-  .controls {
-    bottom: 1rem;
-  }
-
-  .participants-panel {
-    width: 280px;
-  }
+.participants-panel.show {
+  transform: translateX(0);
 }
 
-@media (max-width: 768px) {
-  .participants-panel {
-    width: 100%;
-    border-radius: 0;
-  }
 
-  .controls {
-    width: calc(100% - 2rem);
-    padding: 0.5rem;
-    gap: 0.5rem;
-  }
-
-  .controls button {
-    width: 40px;
-    height: 40px;
-  }
-
-  .message-wrapper {
-    height: 250px;
-    min-height: 250px;
-  }
-}
-
-/* Connection Status */
+/* =================================
+   Utility & Overlay Styles
+==================================== */
 .connection-status {
   position: fixed;
   top: 1rem;
@@ -373,7 +329,6 @@
   font-size: 0.9rem;
 }
 
-/* Error Container */
 .error-container {
   position: fixed;
   top: 50%;
@@ -405,6 +360,11 @@
   transition: all 0.3s ease;
 }
 
+.error-buttons button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
 .error-buttons button:first-child {
   background: #007bff;
   color: white;
@@ -415,129 +375,74 @@
   color: white;
 }
 
-.error-buttons button:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-}
 
-.video-error {
-  width: 100%;
-  height: 100%;
-  min-height: 200px;
-  background: #2a2a2a;
-  border-radius: 12px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-}
-
-.video-error .material-symbols-outlined {
-  font-size: 48px;
-  margin-bottom: 1rem;
-}
-
-/* Add styles for participant toggle button */
-.controls button.participant-toggle {
-  background: #2196f3;
-}
-
-.controls button.participant-toggle:hover {
-  background: #1976d2;
-}
-
-/* Add animation for participant panel */
-@keyframes slideIn {
-  from {
-    transform: translateX(-100%);
-  }
-  to {
-    transform: translateX(0);
+/* =================================
+   Responsive Design
+==================================== */
+@media (max-width: 1200px) {
+  .videos.multiple {
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); /* Adjust minmax for smaller screens */
   }
 }
 
-@keyframes slideOut {
-  from {
-    transform: translateX(0);
+@media (max-width: 1024px) {
+  .container {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto;
+    padding: 0.5rem;
+    gap: 0.5rem;
   }
-  to {
-    transform: translateX(-100%);
+
+  .message-wrapper {
+    height: 300px;
+    min-height: 300px;
+  }
+
+  .controls {
+    bottom: 1rem;
   }
 }
 
-.participants-panel-enter {
-  animation: slideIn 0.3s forwards;
-}
+@media (max-width: 768px) {
+  .video-wrapper {
+    padding: 0.5rem;
+  }
 
-.participants-panel-exit {
-  animation: slideOut 0.3s forwards;
-}
+  .videos {
+    gap: 0.5rem;
+  }
 
-/* Fix participant panel positioning */
-.participants-panel {
-  position: fixed;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 250px;
-  background: rgba(0, 0, 0, 0.3);
-  border-radius: 0 12px 12px 0;
-  backdrop-filter: blur(10px);
-  transform: translateX(-100%);
-  transition: transform 0.3s ease;
-  z-index: 1000;
-  display: flex;
-  flex-direction: column;
-}
+  .videos.pair {
+    grid-template-columns: 1fr; /* Stack videos on smaller screens */
+  }
 
-.participants-panel.show {
-  transform: translateX(0);
-}
+  .videos.multiple {
+    grid-template-columns: 1fr; /* Stack videos on smaller screens */
+    grid-auto-rows: 220px; /* Adjust row height for smaller screens */
+  }
+  
+  .videos.single .video-container {
+    aspect-ratio: 4/3;
+  }
 
-.video-container {
-  position: relative;
-  aspect-ratio: 16/9;
-  background: #1a1a1a;
-  border-radius: 8px;
-  overflow: hidden;
-}
+  .controls {
+    width: calc(100% - 2rem);
+    padding: 0.5rem;
+    gap: 0.5rem;
+  }
 
-.videos {
-  display: grid;
-  gap: 1rem;
-  padding: 1rem;
-  height: calc(100vh - 150px);
-}
+  .controls button {
+    width: 40px;
+    height: 40px;
+  }
 
-.videos.single {
-  grid-template-columns: 1fr;
+  .message-wrapper {
+    height: 250px;
+    min-height: 250px;
+  }
+  
+  .participants-panel {
+    width: 100%;
+    border-radius: 0;
+  }
 }
-
-.videos.pair {
-  grid-template-columns: repeat(2, 1fr);
-}
-
-.videos.multiple {
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-}
-
-.participant-name {
-  position: absolute;
-  bottom: 1rem;
-  left: 1rem;
-  color: white;
-  background: rgba(0, 0, 0, 0.5);
-  padding: 0.5rem;
-  border-radius: 4px;
-}
-
-.video-error {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: white;
-  background: #333;
-} 

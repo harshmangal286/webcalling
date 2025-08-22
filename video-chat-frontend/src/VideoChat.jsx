@@ -426,13 +426,7 @@ const VideoChat = () => {
       console.log(`Creating peer connection for user: ${userId}`);
       const pc = new RTCPeerConnection({
         iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:openrelay.metered.ca:80' },
-          {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelayproject',
-            credential: 'openrelayproject',
-          },
+          { urls: 'stun:stun.l.google.com:19302' }
         ],
         iceCandidatePoolSize: 10
       });
@@ -451,8 +445,12 @@ const VideoChat = () => {
         }
       };
       pc.oniceconnectionstatechange = () => {
-        console.log("ICE state:", pc.iceConnectionState);
+        if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") {
+          console.warn("ICE failed, trying restart");
+          pc.restartIce();
+        }
       };
+
 
       pc.ontrack = (event) => {
         console.log(`Track received from ${userId}`);
